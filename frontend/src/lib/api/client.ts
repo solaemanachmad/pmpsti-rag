@@ -1,14 +1,15 @@
-import { PUBLIC_API_URL } from '$env/static/public';
+import { env } from '$env/dynamic/public';
 
-// Deteksi API URL: env var (Vercel/SvelteKit) > proxy lokal
-const BASE = (PUBLIC_API_URL || '') + '/api';
+// Read at call time from dynamic env: a missing PUBLIC_API_URL (e.g. on Vercel
+// Preview) no longer breaks the build and falls back to the /api proxy route.
+const base = () => (env.PUBLIC_API_URL || '') + '/api';
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> ?? {})
   };
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${base()}${path}`, {
     ...options,
     headers,
     credentials: 'include',  // kirim httpOnly cookie otomatis
@@ -179,7 +180,7 @@ export function askStream(
 
   (async () => {
     try {
-      const res = await fetch(`${BASE}/ask`, {
+      const res = await fetch(`${base()}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -412,7 +413,7 @@ export function askPublic(
 
   (async () => {
     try {
-      const res = await fetch(`${BASE}/ask_public`, {
+      const res = await fetch(`${base()}/ask_public`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
