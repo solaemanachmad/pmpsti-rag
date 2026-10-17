@@ -4,181 +4,235 @@
 
 @layer base {
   :root {
-    /* UGM palette */
-    --ugm-navy:  #002147;
-    --ugm-blue:  #0055A5;
-    --ugm-gold:  #F5A623;
-
-    --background:         0 0% 97.5%;       /* #F8F9FC — off-white */
-    --foreground:         228 50% 12%;       /* #1A1A2E near-black */
-    --card:               0 0% 100%;
-    --card-foreground:    228 50% 12%;
-    --primary:            213 100% 32%;      /* #0055A5 UGM blue */
-    --primary-foreground: 0 0% 100%;
-    --secondary:          213 100% 12%;      /* #002147 UGM navy */
-    --secondary-foreground: 0 0% 100%;
-    --muted:              220 14% 93%;
-    --muted-foreground:   220 9% 46%;
-    --accent:             37 91% 55%;        /* #F5A623 UGM gold */
-    --accent-foreground:  228 50% 12%;
-    --destructive:        0 84% 60%;
+    /* UGM palette: navy #0B2545, blue #0055A5, gold #E3B54F */
+    --background:             220 33% 98%;
+    --foreground:             222 47% 12%;
+    --card:                   0 0% 100%;
+    --card-foreground:        222 47% 12%;
+    --primary:                211 100% 33%;
+    --primary-foreground:     0 0% 100%;
+    --secondary:              214 72% 16%;
+    --secondary-foreground:   0 0% 100%;
+    --muted:                  220 20% 94%;
+    --muted-foreground:       220 10% 44%;
+    --accent:                 41 72% 60%;
+    --accent-foreground:      222 47% 12%;
+    --destructive:            0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border:             220 13% 88%;
-    --input:              220 13% 88%;
-    --ring:               213 100% 32%;
-    --radius:             0.5rem;
+    --success:                152 60% 36%;
+    --success-foreground:     0 0% 100%;
+    --warning:                32 90% 44%;
+    --warning-foreground:     0 0% 100%;
+    --border:                 220 16% 89%;
+    --input:                  220 16% 86%;
+    --ring:                   211 100% 40%;
+    --radius:                 0.75rem;
+
+    /* Sidebar stays navy in both themes */
+    --sidebar:            214 72% 15%;
+    --sidebar-foreground: 210 30% 96%;
+    --sidebar-muted:      214 20% 68%;
+    --sidebar-hover:      214 50% 22%;
+    --sidebar-border:     214 45% 22%;
   }
 
   .dark {
-    --background:         213 100% 8%;       /* deep navy */
-    --foreground:         210 20% 95%;
-    --card:               213 60% 12%;
-    --card-foreground:    210 20% 95%;
-    --primary:            213 80% 55%;       /* lighter blue for dark */
-    --primary-foreground: 0 0% 100%;
-    --secondary:          213 100% 20%;
-    --secondary-foreground: 0 0% 100%;
-    --muted:              213 40% 18%;
-    --muted-foreground:   217 10% 60%;
-    --accent:             37 91% 55%;
-    --accent-foreground:  228 50% 12%;
-    --destructive:        0 62% 40%;
+    --background:             222 47% 7%;
+    --foreground:             210 25% 94%;
+    --card:                   220 40% 10%;
+    --card-foreground:        210 25% 94%;
+    --primary:                211 90% 62%;
+    --primary-foreground:     222 47% 8%;
+    --secondary:              214 60% 22%;
+    --secondary-foreground:   0 0% 100%;
+    --muted:                  220 30% 15%;
+    --muted-foreground:       218 14% 64%;
+    --accent:                 41 72% 60%;
+    --accent-foreground:      222 47% 10%;
+    --destructive:            0 70% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border:             213 40% 20%;
-    --input:              213 40% 20%;
-    --ring:               213 80% 55%;
+    --success:                152 50% 50%;
+    --success-foreground:     222 47% 8%;
+    --warning:                38 90% 58%;
+    --warning-foreground:     222 47% 8%;
+    --border:                 220 28% 18%;
+    --input:                  220 28% 22%;
+    --ring:                   211 90% 62%;
+
+    --sidebar:            222 50% 5%;
+    --sidebar-foreground: 210 25% 94%;
+    --sidebar-muted:      218 14% 58%;
+    --sidebar-hover:      220 35% 12%;
+    --sidebar-border:     220 30% 13%;
   }
 
   * { border-color: hsl(var(--border)); }
 
   html {
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
   }
 
   body {
+    @apply font-sans;
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
     line-height: 1.6;
   }
 
-  /* Markdown prose inside chat bubbles — shared by .prose and .prose-chat */
-  .prose p, .prose-chat p { margin: 0.5em 0; }
-  .prose p:first-child, .prose-chat p:first-child { margin-top: 0; }
-  .prose p:last-child,  .prose-chat p:last-child  { margin-bottom: 0; }
-  .prose ul, .prose-chat ul,
-  .prose ol, .prose-chat ol { padding-left: 1.5em; margin: 0.5em 0; }
-  .prose li, .prose-chat li { margin: 0.2em 0; }
-  .prose strong, .prose-chat strong { font-weight: 600; }
-  .prose em,     .prose-chat em     { font-style: italic; }
-  .prose h1, .prose-chat h1 { font-size: 1.2em; font-weight: 700; margin: 0.8em 0 0.4em; }
-  .prose h2, .prose-chat h2 { font-size: 1.1em; font-weight: 700; margin: 0.7em 0 0.3em; }
-  .prose h3, .prose-chat h3 { font-size: 1.0em; font-weight: 600; margin: 0.6em 0 0.2em; }
-  .prose code, .prose-chat code {
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* Markdown inside chat answers */
+  .prose-chat { overflow-wrap: anywhere; }
+  .prose-chat p { margin: 0.6em 0; }
+  .prose-chat > :first-child { margin-top: 0; }
+  .prose-chat > :last-child  { margin-bottom: 0; }
+  .prose-chat ul, .prose-chat ol { padding-left: 1.4em; margin: 0.5em 0; }
+  .prose-chat ul { list-style: disc; }
+  .prose-chat ol { list-style: decimal; }
+  .prose-chat li { margin: 0.25em 0; }
+  .prose-chat strong { font-weight: 650; }
+  .prose-chat em { font-style: italic; }
+  .prose-chat a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
+  .prose-chat h1 { font-size: 1.2em; font-weight: 700; margin: 0.9em 0 0.4em; }
+  .prose-chat h2 { font-size: 1.1em; font-weight: 700; margin: 0.8em 0 0.3em; }
+  .prose-chat h3 { font-size: 1em;   font-weight: 650; margin: 0.7em 0 0.2em; }
+  .prose-chat code {
     font-size: 0.875em;
     background: hsl(var(--muted));
     padding: 0.1em 0.35em;
     border-radius: 4px;
   }
-  .prose pre, .prose-chat pre {
+  .prose-chat pre {
     background: hsl(var(--muted));
     padding: 0.75em 1em;
     border-radius: 8px;
     overflow-x: auto;
-    margin: 0.5em 0;
+    margin: 0.6em 0;
   }
-  .prose pre code, .prose-chat pre code { background: none; padding: 0; }
-  /* Tabel Markdown */
-  .prose table, .prose-chat table {
-    width: 100%;
+  .prose-chat pre code { background: none; padding: 0; }
+  .prose-chat table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
     border-collapse: collapse;
     margin: 0.75em 0;
     font-size: 0.9em;
   }
-  .prose th, .prose-chat th {
-    padding: 0.4em 0.75em;
+  .prose-chat th {
+    padding: 0.45em 0.75em;
     font-weight: 600;
     border: 1px solid hsl(var(--border));
     background: hsl(var(--muted));
     text-align: left;
   }
-  .prose td, .prose-chat td {
-    padding: 0.35em 0.75em;
+  .prose-chat td {
+    padding: 0.4em 0.75em;
     border: 1px solid hsl(var(--border));
     vertical-align: top;
   }
-  .prose tr:nth-child(even), .prose-chat tr:nth-child(even) {
-    background: hsl(var(--muted) / 0.3);
-  }
-  /* Blockquote */
-  .prose blockquote, .prose-chat blockquote {
-    border-left: 3px solid hsl(var(--primary));
-    margin: 0.5em 0;
-    padding: 0.25em 0.75em;
+  .prose-chat blockquote {
+    border-left: 3px solid hsl(var(--accent));
+    margin: 0.6em 0;
+    padding: 0.25em 0.85em;
     color: hsl(var(--muted-foreground));
   }
-  .prose hr, .prose-chat hr {
+  .prose-chat hr {
     border: none;
     border-top: 1px solid hsl(var(--border));
-    margin: 0.75em 0;
+    margin: 0.85em 0;
   }
 
   sup.citation-ref {
     font-size: 0.7em;
     color: hsl(var(--primary));
-    font-weight: 600;
-    cursor: pointer;
+    font-weight: 700;
+    margin-left: 1px;
   }
 }
 
 @layer components {
   .input {
-    @apply w-full px-3 py-2 text-sm border rounded-lg bg-background
-           focus:outline-none focus:ring-2 focus:ring-ring transition-shadow;
+    @apply w-full h-10 px-3 text-sm border border-input rounded-lg bg-card text-foreground
+           placeholder:text-muted-foreground/70
+           focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring
+           disabled:opacity-60 disabled:cursor-not-allowed transition-shadow;
   }
-  .btn-primary {
-    @apply inline-flex items-center justify-center gap-2
-           bg-primary text-primary-foreground text-sm font-semibold
-           px-4 py-2.5 rounded-lg
-           hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed
-           transition-all duration-150;
+  textarea.input { @apply h-auto py-2; }
+  select.input { @apply pr-8; }
+
+  .label { @apply block text-xs font-semibold text-muted-foreground mb-1.5; }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg
+           text-sm font-semibold whitespace-nowrap select-none
+           disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150;
   }
-  .btn-gold {
-    @apply inline-flex items-center justify-center gap-2
-           bg-accent text-accent-foreground text-sm font-semibold
-           px-4 py-2.5 rounded-lg
-           hover:brightness-105 disabled:opacity-50 disabled:cursor-not-allowed
-           transition-all duration-150;
-  }
-  .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2
-           text-sm font-medium text-muted-foreground
-           px-3 py-2 rounded-lg
-           hover:bg-muted hover:text-foreground
-           transition-colors duration-150;
+  .btn-primary   { @apply btn bg-primary text-primary-foreground hover:brightness-110 shadow-sm; }
+  .btn-gold      { @apply btn bg-accent text-accent-foreground hover:brightness-105 shadow-sm; }
+  .btn-outline   { @apply btn border bg-card text-foreground hover:bg-muted; }
+  .btn-ghost     { @apply btn text-muted-foreground hover:bg-muted hover:text-foreground; }
+  .btn-danger    { @apply btn bg-destructive text-destructive-foreground hover:brightness-110; }
+  /* Size modifier — declared after the variants so it wins */
+  .btn-sm { @apply h-8 px-3 text-xs gap-1.5; }
+
+  .icon-btn {
+    @apply inline-flex items-center justify-center w-9 h-9 rounded-lg shrink-0
+           text-muted-foreground hover:bg-muted hover:text-foreground
+           disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
   }
 
-  /* Source card — klikkabel */
-  .source-card {
-    @apply flex items-start gap-3 p-3 rounded-lg border bg-card
-           hover:bg-muted/60 transition-colors cursor-pointer text-left w-full;
+  .card { @apply bg-card text-card-foreground border rounded-xl shadow-soft; }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold w-fit whitespace-nowrap;
   }
+  .badge-neutral { @apply badge bg-muted text-muted-foreground; }
+  .badge-primary { @apply badge bg-primary/10 text-primary; }
+  .badge-success { @apply badge bg-success/10 text-success; }
+  .badge-warning { @apply badge bg-warning/15 text-warning; }
+  .badge-danger  { @apply badge bg-destructive/10 text-destructive; }
+
+  /* Data tables that collapse to cards on mobile */
+  .data-table { @apply w-full text-sm; }
+  .data-table thead { @apply bg-muted/50 text-muted-foreground text-[11px] uppercase tracking-wider; }
+  .data-table th { @apply px-4 py-3 text-left font-semibold; }
+  .data-table td { @apply px-4 py-3 align-middle; }
+  .data-table tbody tr { @apply border-t hover:bg-muted/30 transition-colors; }
 }
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
+  50%      { opacity: 0; }
 }
 .cursor-blink {
   display: inline-block;
   width: 2px;
   height: 1em;
   background-color: currentColor;
-  margin-left: 1px;
+  margin-left: 2px;
   vertical-align: text-bottom;
   animation: blink 1s step-end infinite;
 }
 
+@keyframes dot-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.8); }
+  40%           { opacity: 1;    transform: scale(1); }
+}
+.typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: dot-pulse 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
 @media (prefers-reduced-motion: reduce) {
-  .cursor-blink { animation: none; opacity: 1; }
+  .cursor-blink, .typing-dot { animation: none; opacity: 1; }
 }

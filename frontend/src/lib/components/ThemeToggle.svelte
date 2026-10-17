@@ -1,30 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Moon, Sun } from 'lucide-svelte';
+  import { isDark } from '$lib/theme';
 
-  /** Jika true, pakai style untuk header gelap (teks putih) */
-  export let onDark = false;
+  let className = 'icon-btn';
+  export { className as class };
 
-  let dark = false;
-
-  onMount(() => {
-    dark = document.documentElement.classList.contains('dark');
-  });
-
-  function toggle() {
-    dark = !dark;
-    document.documentElement.classList.toggle('dark', dark);
-    try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch {}
-  }
+  onMount(isDark.sync);
 </script>
 
 <button
-  on:click={toggle}
-  title={dark ? 'Light mode' : 'Dark mode'}
-  class={onDark
-    ? 'p-2 rounded-lg text-white/70 hover:text-white bg-white/10 hover:bg-white/20 transition-colors'
-    : 'p-2 rounded-full bg-background/80 backdrop-blur border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-all shadow-sm'
-  }
+  type="button"
+  on:click={isDark.toggle}
+  class={className}
+  title={$isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+  aria-label={$isDark ? 'Switch to light mode' : 'Switch to dark mode'}
 >
-  {#if dark}<Sun size={16} />{:else}<Moon size={16} />{/if}
+  {#if $isDark}<Sun size={17} />{:else}<Moon size={17} />{/if}
 </button>
