@@ -33,7 +33,9 @@ import datetime
 import hashlib
 import json
 import os
+import platform
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -41,7 +43,7 @@ from pathlib import Path
 import psycopg2
 import requests
 
-from gemini_embed import GeminiEmbeddings  # also loads .env
+from gemini_embed import DIM as EMBED_DIM, MODEL as EMBED_MODEL, GeminiEmbeddings  # also loads .env
 
 HERE = Path(__file__).resolve().parent
 EVAL_DIR = HERE / "eval"
@@ -154,6 +156,45 @@ def m_rrf(cur, text, vec, limit, k=60):  # search_rrf — only when requested ex
 MODES = {"semantic": m_semantic, "keyword": m_keyword, "hybrid": m_hybrid, "rrf": m_rrf}
 
 
+# ── Run metadata (for reproducibility / papers) ───────────────────
+def file_sha256(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
+def git_state() -> dict:
+    def run(*cmd):
+        try:
+            return subprocess.run(cmd, cwd=HERE, capture_output=True, text=True, timeout=10).stdout.strip()
+        except Exception:
+            return ""
+    return {"commit": run("git", "rev-parse", "HEAD") or None,
+            "branch": run("git", "rev-parse", "--abbrev-ref", "HEAD") or None,
+            "dirty": bool(run("git", "status", "--porcelain", "--untracked-files=no"))}
+
+
+def run_metadata(cur, args) -> dict:
+    cur.execute("SELECT id, document_id, COALESCE(content, '') FROM documents ORDER BY id")
+    rows = cur.fetchall()
+    fingerprint = hashlib.sha256("\n".join(
+        f"{i}\t{d}\t{hashlib.sha256(c.encode()).hexdigest()}" for i, d, c in rows).encode()).hexdigest()
+    llm_backend = os.environ.get("LLM_BACKEND", "")
+    return {
+        "git": git_state(),
+        "python": platform.python_version(),
+        "embedding": {"model": EMBED_MODEL, "dimensions": EMBED_DIM,
+                      "query_task_type": "RETRIEVAL_QUERY", "document_task_type": "RETRIEVAL_DOCUMENT"},
+        "llm_for_e2e": {"backend": llm_backend,
+                        "model": os.environ.get("GEMINI_MODEL" if llm_backend == "gemini" else "LLM_MODEL", "")}
+                       if args.backend else None,
+        "settings": {"top_k": TOP_K, "answer_k": ANSWER_K, "e2e_pause_s": E2E_PAUSE_S,
+                     "hybrid_weights": [0.7, 0.3], "rrf_k": 60, "ts_config": "indonesian"},
+        "corpus": {"chunks": len(rows), "documents": len({d for _, d, _ in rows}),
+                   "fingerprint_sha256": fingerprint},
+        "test_sets": {"questions.json": file_sha256(DOC_SET), "pertanyaan_uji.csv": file_sha256(ANSWER_SET)},
+        "note": "e2e answers come from an LLM and vary between runs; repeat runs to report mean and spread.",
+    }
+
+
 # ── Scoring ────────────────────────────────────────────────────────
 def first_hit_rank(results, expect: set[str]) -> int | None:
     for rank, row in enumerate(results, start=1):
@@ -243,6 +284,7 @@ def main() -> None:
     cur.execute("SELECT DISTINCT document_id, COALESCE(source_url, '') FROM documents")
     present = set().union(*(doc_keys(d, u) for d, u in cur.fetchall()))
     host = args.db.split("@")[-1].split("/")[0]
+    meta = run_metadata(cur, args)
 
     # Set 1 — documents
     doc_results = []
@@ -263,7 +305,8 @@ def main() -> None:
     ans_summary = {m: sum(p["found"][m] for p in ans_results) / (len(ans_results) or 1) for m in modes}
 
     # ── Report ──
-    print(f"\nDatabase : {host}")
+    print(f"\nDatabase : {host}   corpus {meta['corpus']['chunks']} chunks, fingerprint {meta['corpus']['fingerprint_sha256'][:12]}")
+    print(f"Code     : {(meta['git']['commit'] or '?')[:7]}{' (uncommitted changes)' if meta['git']['dirty'] else ''}")
     print(f"Document set : {len(scored)} scored ({len(doc_results) - len(scored)} sources not ingested yet)")
     print(f"Answer set   : {len(ans_results)} scored ({len(ans_skipped)} skipped: not ingested / unverified / out of scope / multi-turn)\n")
     print(f"{'mode':<20}{'doc hit@1':>10}{'doc hit@5':>10}{'MRR':>7}{'ans@5':>8}")
@@ -292,7 +335,7 @@ def main() -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     out = RESULTS_DIR / f"{stamp}_{args.label}.json"
-    out.write_text(json.dumps({"label": args.label, "time": stamp, "db_host": host,
+    out.write_text(json.dumps({"label": args.label, "time": stamp, "db_host": host, "meta": meta,
                                "doc_summary": doc_summary, "answer_summary": ans_summary,
                                "doc_questions": doc_results, "answer_questions": ans_results,
                                "e2e": e2e, "backend": args.backend}, indent=2))
