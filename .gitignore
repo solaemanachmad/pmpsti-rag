@@ -39,3 +39,6 @@ scripts/panduan_pmpsti_src/
 
 
 .claude
+
+# Retrieval eval: embedding cache (results/ are committed)
+scripts/eval/.cache/

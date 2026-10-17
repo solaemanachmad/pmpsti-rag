@@ -758,73 +758,58 @@ pub async fn update_password(
 //  FILTER SOURCES — dynamic relevance filtering
 // ══════════════════════════════════════════════════════════════════
 
-/// Filter chunks hasil retrieval menjadi referensi yang benar-benar relevan.
+/// Minimum score for a source chunk. Hybrid top-1 scores on the test set are 0.41–0.60
+/// (median 0.55), so 0.35 never drops a correct answer (see scripts/eval_retrieval.py).
+const MIN_SOURCE_SCORE: f64 = 0.35;
+
+/// Pick the search hits that are good enough to use as context (still per chunk;
+/// `RagEngine::build_context` then merges them per document = per source card).
 ///
-/// Untuk list/procedural queries: lebih longgar — chunk dari dokumen yang sama
-/// tetap dipertahankan karena semua diperlukan untuk jawaban lengkap.
-///
-/// Strategi (berurutan):
-/// 1. Score threshold  — buang chunk dengan score < min_score
-/// 2. Score gap        — potong jika ada drop > gap_ratio antara chunk berurutan
-///                       (DILEWATI untuk list/procedural: semua chunk dokumen relevan)
-/// 3. Dedup per source — satu source_url hanya muncul sekali di kartu referensi
-///                       (chunk terbaik per URL, tapi SEMUA dikirim ke LLM)
-/// 4. Max cap          — paling banyak max_sources referensi di kartu
+/// 1. Score threshold — drop chunks with score < min_score
+/// 2. Score gap       — stop when the score falls by more than gap_ratio from the previous chunk
+///                      (skipped for list/procedural questions: they need more parts)
+/// 3. Max documents   — every hit from at most `max_docs` top documents
 fn filter_sources<'a>(
-    chunks: &'a [crate::db::SearchResult],
-    query:       &str,
-    min_score:   f64,
-    gap_ratio:   f64,
-    max_sources: usize,
+    chunks:    &'a [crate::db::SearchResult],
+    query:     &str,
+    min_score: f64,
+    gap_ratio: f64,
+    max_docs:  usize,
 ) -> Vec<&'a crate::db::SearchResult> {
     use crate::rag::{RagEngine, QueryType};
 
-    if chunks.is_empty() {
-        return vec![];
-    }
+    let Some(best) = chunks.first() else { return vec![] };
+    let is_expand_query = matches!(
+        RagEngine::classify_query_patterns(query),
+        QueryType::List | QueryType::Procedural
+    );
 
-    let query_type = RagEngine::classify_query_patterns(query);
-    let is_expand_query = matches!(query_type, QueryType::List | QueryType::Procedural);
-
-    // 1. Score threshold — lebih longgar untuk list/procedural
-    let effective_min = if is_expand_query { min_score * 0.6 } else { min_score };
-    let above: Vec<&crate::db::SearchResult> = chunks.iter()
-        .filter(|c| c.score >= effective_min)
-        .collect();
-
-    if above.is_empty() {
-        return vec![&chunks[0]];
-    }
-
-    // 2. Score gap — lewati untuk list/procedural
-    let filtered: Vec<&crate::db::SearchResult> = if is_expand_query {
-        above
-    } else {
-        let mut cutoff = above.len();
-        for i in 1..above.len() {
-            let prev = above[i - 1].score;
-            let curr = above[i].score;
-            if prev > 0.0 && (prev - curr) / prev > gap_ratio {
-                cutoff = i;
+    let mut kept: Vec<&crate::db::SearchResult> = Vec::new();
+    for c in chunks.iter().filter(|c| c.score >= min_score) {
+        if let Some(prev) = kept.last() {
+            if !is_expand_query && prev.score > 0.0 && (prev.score - c.score) / prev.score > gap_ratio {
                 break;
             }
         }
-        above[..cutoff].to_vec()
-    };
+        kept.push(c);
+    }
+    if kept.is_empty() {
+        return vec![best]; // still give the LLM the single best context
+    }
 
-    // 3. Dedup per source_url untuk kartu referensi
-    //    Untuk list/procedural: kelompokkan per dokumen, ambil chunk pertama sebagai
-    //    representasi kartu — tapi semua chunk tetap masuk ke LLM via konteks.
-    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let deduped: Vec<&crate::db::SearchResult> = filtered.into_iter()
+    let mut docs: Vec<&str> = Vec::new();
+    kept.into_iter()
         .filter(|c| {
-            let key = if c.source_url.is_empty() { c.title.clone() } else { c.source_url.clone() };
-            seen_urls.insert(key)
+            if docs.contains(&c.document_id.as_str()) {
+                return true;
+            }
+            if docs.len() >= max_docs {
+                return false;
+            }
+            docs.push(&c.document_id);
+            true
         })
-        .collect();
-
-    // 4. Max cap
-    deduped.into_iter().take(max_sources).collect()
+        .collect()
 }
 
 pub async fn ask(
@@ -864,7 +849,8 @@ pub async fn ask(
         crate::rag::Message { role: m.role.clone(), content: m.content.clone() }
     }).collect();
 
-    let search_mode = body.search_mode.as_deref().unwrap_or("rrf");
+    // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
+    let search_mode = body.search_mode.as_deref().unwrap_or("hybrid");
     let top_k       = body.top_k.unwrap_or(10); // fetch lebih banyak, filter di filter_sources
     let cat_filter  = body.category_filter.as_deref();
 
@@ -882,11 +868,13 @@ pub async fn ask(
             .json(ApiError::new(500, format!("Gagal mencari dokumen: {}", e))),
     };
 
-    // 2. Filter DULU → hanya chunk yang akan ditampilkan sebagai kartu
-    //    LLM akan menerima konteks yang sama persis → nomor [1]..[N] cocok
-    let relevant = filter_sources(&all_chunks, &body.query, 0.40, 0.25, 6);
+    // 2. Filter → merge per document + add surrounding context.
+    //    One entry = one source card = number [n] in the answer.
+    let hits     = filter_sources(&all_chunks, &body.query, MIN_SOURCE_SCORE, 0.25, 6);
+    let contexts = state.rag.build_context(&body.query, &hits).await;
+    let relevant: Vec<&crate::db::SearchResult> = contexts.iter().collect();
 
-    // 3. Panggil LLM dengan filtered chunks saja
+    // 3. Call the LLM with exactly the same contexts as the source cards
     let answer = match state.rag.answer_with_chunks(
         &body.query,
         &history,
@@ -995,7 +983,8 @@ pub async fn ask_public(
             .json(ApiError::new(400, "Query tidak boleh kosong"));
     }
 
-    let search_mode = body.search_mode.as_deref().unwrap_or("rrf");
+    // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
+    let search_mode = body.search_mode.as_deref().unwrap_or("hybrid");
     let top_k       = body.top_k.unwrap_or(5);
 
     let start = std::time::Instant::now();
@@ -1012,8 +1001,10 @@ pub async fn ask_public(
             .json(ApiError::new(500, format!("Gagal mencari dokumen: {}", e))),
     };
 
-    // 2. Filter dulu → nomor konteks = nomor kartu sumber
-    let relevant = filter_sources(&all_chunks, &body.query, 0.45, 0.25, 5);
+    // 2. Filter → merge per document + surrounding context (context number = card number)
+    let hits     = filter_sources(&all_chunks, &body.query, MIN_SOURCE_SCORE, 0.25, 5);
+    let contexts = state.rag.build_context(&body.query, &hits).await;
+    let relevant: Vec<&crate::db::SearchResult> = contexts.iter().collect();
 
     // 3. LLM dengan filtered chunks
     let answer = match state.rag.answer_with_chunks(
