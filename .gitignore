@@ -36,3 +36,6 @@ scripts/*.sql
 # Fly.io
 .fly/
 scripts/panduan_pmpsti_src/
+
+
+.claude
