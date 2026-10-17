@@ -530,7 +530,7 @@ impl Database {
 
     // ════════════════════════════════════════════════════════════
     //  SEARCH — PURE FULL-TEXT (BM25)
-    //  Dipakai mode "keyword" dan sebagai fallback saat embedding Gemini gagal.
+    //  Used by the "keyword" mode and as the fallback when Gemini embedding fails.
     // ════════════════════════════════════════════════════════════
     pub async fn search_fulltext(
         &self,
@@ -538,8 +538,8 @@ impl Database {
         limit: i64,
         category_filter: Option<&str>,
     ) -> Result<Vec<SearchResult>, sqlx::Error> {
-        // OR antar kata (bukan AND seperti plainto_tsquery) + tanpa kata tanya:
-        // hit@5 dokumen naik dari 7% ke 83% di scripts/eval_retrieval.py.
+        // OR between words (not AND like plainto_tsquery), without question words:
+        // document hit@5 rose from 7% to 83% in scripts/eval_retrieval.py.
         let Some(tsquery) = keyword_tsquery(query_text) else { return Ok(vec![]) };
         let rows = sqlx::query(
             "SELECT document_id, title, content, category, subcategory,
@@ -1336,8 +1336,8 @@ impl Database {
 //  PRIVATE HELPERS
 // ══════════════════════════════════════════════════════════════════
 
-/// Kata tanya & kata fungsi yang membuat pencarian kata kunci gagal bila wajib cocok.
-/// Sama dengan STOPWORDS di scripts/eval_retrieval.py.
+/// Question and function words that make keyword search fail when every word must match.
+/// Keep in sync with STOPWORDS in scripts/eval_retrieval.py.
 const KEYWORD_STOPWORDS: &[&str] = &[
     "apa", "apakah", "siapa", "bagaimana", "berapa", "kapan", "mana", "dimana", "di", "ke",
     "dari", "dan", "atau", "yang", "untuk", "dengan", "pada", "dalam", "ini", "itu", "adalah",
@@ -1348,9 +1348,9 @@ const KEYWORD_STOPWORDS: &[&str] = &[
     "with", "about",
 ];
 
-/// Ubah pertanyaan bebas menjadi tsquery OR ("dosen | pembimbing | tesis").
-/// Hanya huruf/angka ASCII yang lolos, jadi aman diteruskan ke `to_tsquery`.
-/// `None` jika tidak ada kata yang tersisa.
+/// Turn a free-form question into an OR tsquery ("dosen | pembimbing | tesis").
+/// Only ASCII letters/digits survive, so the result is safe to pass to `to_tsquery`.
+/// `None` when no words are left.
 fn keyword_tsquery(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
     let mut terms: Vec<&str> = Vec::new();

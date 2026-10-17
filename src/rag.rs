@@ -305,9 +305,9 @@ impl RagEngine {
         QueryType::General
     }
 
-    /// Cari chunks — hanya peringkat, tanpa ekspansi.
-    /// hybrid (default) / rrf / semantic / keyword sesuai search_mode.
-    /// Ekspansi konteks dilakukan SETELAH filter, di `build_context`.
+    /// Search chunks — ranking only, no expansion.
+    /// hybrid (default) / rrf / semantic / keyword depending on search_mode.
+    /// Context is expanded AFTER filtering, in `build_context`.
     pub async fn search_chunks(
         &self,
         query:           &str,
@@ -323,11 +323,11 @@ impl RagEngine {
         })
     }
 
-    /// Satukan chunk terpilih menjadi SATU konteks per dokumen (= satu kartu sumber,
-    /// nomor [n] di jawaban = kartu ke-n), lalu tambah konteks di sekitarnya:
-    /// - List / Procedural: chunk lain dari dokumen yang sama (urutan asli), dalam budget
-    /// - lainnya          : tetangga ±1 dari setiap chunk yang cocok
-    /// Chunk yang cocok selalu diprioritaskan — tidak pernah tergeser oleh ekspansi.
+    /// Merge the selected chunks into ONE context per document (= one source card;
+    /// [n] in the answer = the n-th card), then add the surrounding context:
+    /// - List / Procedural: other chunks of the same document (original order), within budget
+    /// - otherwise        : the ±1 neighbours of every matched chunk
+    /// Matched chunks always come first — expansion can never push them out.
     pub async fn build_context(&self, query: &str, hits: &[&SearchResult]) -> Vec<SearchResult> {
         if hits.is_empty() {
             return vec![];
@@ -338,7 +338,7 @@ impl RagEngine {
         );
         let budget_chars: usize = if expand_whole_doc { 14_000 } else { 8_000 };
 
-        // Kelompokkan per dokumen, urut sesuai peringkat chunk terbaiknya
+        // Group per document, ordered by the rank of its best chunk
         let mut groups: Vec<(&SearchResult, Vec<i32>)> = Vec::new();
         for hit in hits {
             let idx = hit.chunk_index.unwrap_or(0);
@@ -360,7 +360,7 @@ impl RagEngine {
                 .find(|c| c.chunk_index.unwrap_or(0) == i)
                 .map(|c| c.content.as_str());
 
-            // Prioritas: chunk yang cocok → tetangganya → (List/Procedural) sisa dokumen
+            // Priority: matched chunks → their neighbours → (List/Procedural) rest of the document
             let mut priority: Vec<i32> = hit_idxs.clone();
             for &i in &hit_idxs {
                 priority.extend([i - 1, i + 1]);
@@ -376,7 +376,7 @@ impl RagEngine {
                     continue;
                 }
                 let Some(text) = content_of(i) else { continue };
-                // Chunk yang cocok selalu masuk; ekspansi hanya selama budget cukup
+                // Matched chunks always go in; expansion only while the budget allows
                 if !hit_idxs.contains(&i) && used + text.len() > per_doc_budget {
                     continue;
                 }
@@ -393,7 +393,7 @@ impl RagEngine {
                 content.push_str(content_of(i).unwrap_or_default());
             }
             if content.is_empty() {
-                content = lead.content.clone(); // dokumen tidak ter-fetch: pakai chunk aslinya
+                content = lead.content.clone(); // document not fetched: use the matched chunk itself
             }
             SearchResult { content, ..lead.clone() }
         }).collect()

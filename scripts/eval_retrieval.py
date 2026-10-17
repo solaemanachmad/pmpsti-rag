@@ -1,30 +1,30 @@
 """
-eval_retrieval.py — Ukur kualitas retrieval terhadap dua test set
-=================================================================
-1. eval/questions.json (scripts/)  — apakah DOKUMEN yang benar muncul di hasil teratas
-2. eval/pertanyaan_uji.csv (root)  — apakah chunk teratas MEMUAT JAWABAN (kata_kunci)
+eval_retrieval.py — measure retrieval and answer quality against two test sets
+===============================================================================
+1. scripts/eval/questions.json — does the right DOCUMENT appear in the top results?
+2. eval/pertanyaan_uji.csv     — do the top chunks CONTAIN THE ANSWER (kata_kunci column)?
 
-Setiap mode memakai SQL yang SAMA dengan backend (src/db.rs): semantic, keyword
-(tsquery OR tanpa kata tanya), hybrid (0.7 vektor + 0.3 ts_rank, default chat), rrf (k=60).
-Ubah fungsi m_* di sini bersamaan dengan backend agar hasilnya tetap sebanding.
+Every mode uses the SAME SQL as the backend (src/db.rs): semantic, keyword (OR tsquery
+without question words), hybrid (0.7 vector + 0.3 ts_rank, the chat default), rrf (k=60).
+Change the m_* functions here together with the backend so results stay comparable.
 
-    python eval_retrieval.py                     # semua mode, simpan hasil
-    python eval_retrieval.py --label baseline    # beri nama run
+    python eval_retrieval.py                     # all modes, save results
+    python eval_retrieval.py --label baseline    # name the run
     python eval_retrieval.py --modes semantic,hybrid
     python eval_retrieval.py --compare eval/results/<file>.json
-    python eval_retrieval.py --verbose           # detail per pertanyaan
-    python eval_retrieval.py --backend http://localhost:8080   # + uji jawaban end-to-end
+    python eval_retrieval.py --verbose           # per-question details
+    python eval_retrieval.py --backend http://localhost:8080   # + end-to-end answer check
 
-Metrik:
-  doc hit@1 / hit@5 / MRR  : dokumen benar di peringkat 1 / 5 besar (dari 10 hasil)
-  ans@5                    : semua kelompok kata_kunci ada di teks 5 chunk teratas
-  e2e (--backend)          : kata_kunci ada di JAWABAN backend (/api/ask_public) —
-                             termasuk pertanyaan di luar cakupan yang harus dijawab "tidak ditemukan".
-                             Memakai kuota LLM (±1 panggilan per pertanyaan).
-Pertanyaan yang sumbernya belum di-ingest / di luar cakupan dihitung terpisah.
+Metrics:
+  doc hit@1 / hit@5 / MRR  : right document at rank 1 / in the top 5 (out of 10 results)
+  ans@5                    : every kata_kunci group appears in the text of the top 5 chunks
+  e2e (--backend)          : kata_kunci appears in the backend's ANSWER (/api/ask_public),
+                             including out-of-scope questions that must be answered "not found".
+                             Uses LLM quota (about 3 Gemini calls per question).
+Questions whose source is not ingested yet, or is out of scope, are counted separately.
 
-Database dari DATABASE_URL (root .env), dibuka READ-ONLY.
-Embedding pertanyaan di-cache di eval/.cache/ supaya run berikutnya tidak memakai kuota.
+The database comes from DATABASE_URL (root .env) and is opened READ-ONLY.
+Question embeddings are cached in eval/.cache/ so later runs use no embedding quota.
 """
 
 import argparse
@@ -41,7 +41,7 @@ from pathlib import Path
 import psycopg2
 import requests
 
-from gemini_embed import GeminiEmbeddings  # juga memuat .env
+from gemini_embed import GeminiEmbeddings  # also loads .env
 
 HERE = Path(__file__).resolve().parent
 EVAL_DIR = HERE / "eval"
@@ -56,7 +56,7 @@ E2E_PAUSE_S = 8
 COLS = "document_id, COALESCE(source_url, '') AS source_url, COALESCE(content, '') AS content, chunk_index"
 
 
-# ── Dokumen → path yang stabil ─────────────────────────────────────
+# ── Document → stable path ─────────────────────────────────────────
 def normalise(path: str) -> str:
     path = re.sub(r"^https?://[^/]+/", "", path.strip())
     path = re.sub(r"^panduan_pmpsti/", "", path)
@@ -81,7 +81,7 @@ def embed_questions(questions: list[str]) -> dict[str, str]:
     key = lambda q: hashlib.sha1(q.encode()).hexdigest()
     missing = sorted({q for q in questions if key(q) not in cache})
     if missing:
-        print(f"Embedding {len(missing)} pertanyaan baru (Gemini RETRIEVAL_QUERY)...")
+        print(f"Embedding {len(missing)} new questions (Gemini RETRIEVAL_QUERY)...")
         model = GeminiEmbeddings(task_type="RETRIEVAL_QUERY")
         for q, v in zip(missing, model.embed(missing, "RETRIEVAL_QUERY")):
             cache[key(q)] = v
@@ -91,8 +91,8 @@ def embed_questions(questions: list[str]) -> dict[str, str]:
     return {q: as_literal(cache[key(q)]) for q in questions}
 
 
-# ── Kata kunci — sama dengan keyword_tsquery() di src/db.rs ────────
-# Kata tanya & kata fungsi yang membuat pencarian kata kunci gagal bila wajib cocok.
+# ── Keywords — same as keyword_tsquery() in src/db.rs ───────────────
+# Question and function words that make keyword search fail when every word must match.
 STOPWORDS = set("""
 apa apakah siapa bagaimana berapa kapan mana dimana di ke dari dan atau yang untuk
 dengan pada dalam ini itu adalah ada saja sudah belum bisa dapat harus akan juga
@@ -108,14 +108,14 @@ def keyword_tsquery(text: str) -> str | None:
     return " | ".join(terms) or None
 
 
-# ── Mode pencarian (cermin src/db.rs) ──────────────────────────────
+# ── Search modes (mirror src/db.rs) ─────────────────────────────────
 def m_semantic(cur, text, vec, limit):
     cur.execute(f"""SELECT {COLS} FROM documents WHERE embedding IS NOT NULL
                     ORDER BY embedding <=> %s::vector LIMIT %s""", (vec, limit))
     return cur.fetchall()
 
 
-def m_keyword(cur, text, vec, limit):  # search_fulltext: juga fallback saat embedding gagal
+def m_keyword(cur, text, vec, limit):  # search_fulltext: also the fallback when embedding fails
     q = keyword_tsquery(text)
     if not q:
         return []
@@ -136,7 +136,7 @@ def m_hybrid(cur, text, vec, limit):  # search_hybrid — default mode
     return cur.fetchall()
 
 
-def m_rrf(cur, text, vec, limit, k=60):  # search_rrf — hanya bila diminta eksplisit
+def m_rrf(cur, text, vec, limit, k=60):  # search_rrf — only when requested explicitly
     cand = max(limit * 3, 30)
     cur.execute(f"""SELECT {COLS} FROM documents
                     ORDER BY ts_rank(to_tsvector('indonesian', content),
@@ -154,7 +154,7 @@ def m_rrf(cur, text, vec, limit, k=60):  # search_rrf — hanya bila diminta eks
 MODES = {"semantic": m_semantic, "keyword": m_keyword, "hybrid": m_hybrid, "rrf": m_rrf}
 
 
-# ── Penilaian ──────────────────────────────────────────────────────
+# ── Scoring ────────────────────────────────────────────────────────
 def first_hit_rank(results, expect: set[str]) -> int | None:
     for rank, row in enumerate(results, start=1):
         if doc_keys(row[0], row[1]) & expect:
@@ -185,14 +185,14 @@ def load_answer_set() -> tuple[list[dict], list[dict]]:
 
 
 def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
-    """Tanya backend sungguhan dan cek kata_kunci di jawabannya."""
+    """Ask the real backend and check kata_kunci in its answers."""
     rows = [r for r in rows if r["jenis"] != "multi_turn" and r["status_sumber"] in ("ada", "-")]
     stamp = datetime.datetime.now().strftime("%H%M%S")
     results = []
-    print(f"\nEnd-to-end: {len(rows)} pertanyaan ke {backend} ...")
+    print(f"\nEnd-to-end: {len(rows)} questions to {backend} ...")
     for n, r in enumerate(rows):
         if n:
-            time.sleep(E2E_PAUSE_S)  # ±3 panggilan Gemini per pertanyaan; jaga batas per menit
+            time.sleep(E2E_PAUSE_S)  # ~3 Gemini calls per question; stay under the per-minute limit
         for attempt in range(4):
             try:
                 resp = requests.post(f"{backend.rstrip('/')}/api/ask_public", timeout=180,
@@ -203,11 +203,11 @@ def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
                 answer = data.get("answer", "") if isinstance(data, dict) else ""
                 if not answer:
                     answer = f"[HTTP {resp.status_code}] {str(data)[:200]}"
-            except Exception as e:  # jaringan / timeout
+            except Exception as e:  # network / timeout
                 answer = f"[ERROR] {e}"
             if "429" not in answer[:120]:
                 break
-            print(f"    (Gemini 429 — tunggu 30 dtk, percobaan {attempt + 1}/3)")
+            print(f"    (Gemini 429 — waiting 30 s, retry {attempt + 1}/3)")
             time.sleep(30)
         flat = " ".join(answer.split())
         ok = answer_found([(None, None, flat, None)], r["kata_kunci"])
@@ -216,7 +216,7 @@ def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
         if verbose and not ok:
             print(f"        → {flat[:220]}")
     score = sum(p["ok"] for p in results) / (len(results) or 1)
-    print(f"End-to-end benar: {sum(p['ok'] for p in results)}/{len(results)} ({score:.0%})")
+    print(f"End-to-end correct: {sum(p['ok'] for p in results)}/{len(results)} ({score:.0%})")
     return {"score": score, "questions": results}
 
 
@@ -225,12 +225,12 @@ def main() -> None:
     ap.add_argument("--db", default=os.environ.get("DATABASE_URL"))
     ap.add_argument("--label", default="run")
     ap.add_argument("--modes", default=",".join(MODES))
-    ap.add_argument("--compare", help="File hasil sebelumnya untuk dibandingkan")
+    ap.add_argument("--compare", help="Earlier results file to compare against")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--backend", help="URL backend untuk uji end-to-end, mis. http://localhost:8080")
+    ap.add_argument("--backend", help="Backend URL for the end-to-end check, e.g. http://localhost:8080")
     args = ap.parse_args()
     if not args.db:
-        sys.exit("DATABASE_URL belum di-set.")
+        sys.exit("DATABASE_URL is not set.")
     modes = [m.strip() for m in args.modes.split(",")]
 
     doc_qs = json.loads(DOC_SET.read_text())["questions"]
@@ -244,7 +244,7 @@ def main() -> None:
     present = set().union(*(doc_keys(d, u) for d, u in cur.fetchall()))
     host = args.db.split("@")[-1].split("/")[0]
 
-    # Set 1 — dokumen
+    # Set 1 — documents
     doc_results = []
     for q in doc_qs:
         expect = {normalise(e) for e in q["expect"]}
@@ -254,7 +254,7 @@ def main() -> None:
     scored = [p for p in doc_results if p["ingested"]]
     doc_summary = {m: summarise([p["ranks"][m] for p in scored]) for m in modes}
 
-    # Set 2 — jawaban
+    # Set 2 — answers
     ans_results = []
     for r in ans_qs:
         q = r["pertanyaan"]
@@ -262,10 +262,10 @@ def main() -> None:
         ans_results.append({"id": r["id"], "q": q, "type": r["jenis"], "found": found})
     ans_summary = {m: sum(p["found"][m] for p in ans_results) / (len(ans_results) or 1) for m in modes}
 
-    # ── Laporan ──
+    # ── Report ──
     print(f"\nDatabase : {host}")
-    print(f"Set dokumen : {len(scored)} dinilai ({len(doc_results) - len(scored)} sumber belum di-ingest)")
-    print(f"Set jawaban : {len(ans_results)} dinilai ({len(ans_skipped)} dilewati: belum/cek/di luar cakupan/multi-turn)\n")
+    print(f"Document set : {len(scored)} scored ({len(doc_results) - len(scored)} sources not ingested yet)")
+    print(f"Answer set   : {len(ans_results)} scored ({len(ans_skipped)} skipped: not ingested / unverified / out of scope / multi-turn)\n")
     print(f"{'mode':<20}{'doc hit@1':>10}{'doc hit@5':>10}{'MRR':>7}{'ans@5':>8}")
     for m in modes:
         s = doc_summary[m]
@@ -273,13 +273,13 @@ def main() -> None:
 
     if args.verbose:
         fmt = lambda r: "—" if r is None else str(r)
-        print(f"\nPeringkat dokumen benar (— = tidak ada di {TOP_K} teratas):")
+        print(f"\nRank of the right document (— = not in the top {TOP_K}):")
         print(f"{'id':<20}" + "".join(f"{m[:11]:>12}" for m in modes))
         for p in doc_results:
             print(f"{p['id']:<20}" + "".join(f"{fmt(p['ranks'][m]):>12}" for m in modes)
-                  + ("" if p["ingested"] else "  (belum di-ingest)"))
-        print(f"\nJawaban ada di {ANSWER_K} chunk teratas (✓/·):")
-        print(f"{'id':<6}" + "".join(f"{m[:11]:>12}" for m in modes) + "  pertanyaan")
+                  + ("" if p["ingested"] else "  (not ingested)"))
+        print(f"\nAnswer in the top {ANSWER_K} chunks (✓/·):")
+        print(f"{'id':<6}" + "".join(f"{m[:11]:>12}" for m in modes) + "  question")
         for p in ans_results:
             print(f"{p['id']:<6}" + "".join(f"{'✓' if p['found'][m] else '·':>12}" for m in modes) + f"  {p['q'][:60]}")
 
@@ -288,7 +288,7 @@ def main() -> None:
         all_rows = list(csv.DictReader(ANSWER_SET.open(encoding="utf-8-sig")))
         e2e = run_e2e(args.backend, all_rows, args.verbose)
 
-    # ── Simpan & bandingkan ──
+    # ── Save & compare ──
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     out = RESULTS_DIR / f"{stamp}_{args.label}.json"
@@ -296,11 +296,11 @@ def main() -> None:
                                "doc_summary": doc_summary, "answer_summary": ans_summary,
                                "doc_questions": doc_results, "answer_questions": ans_results,
                                "e2e": e2e, "backend": args.backend}, indent=2))
-    print(f"\nHasil disimpan: {out.relative_to(HERE)}")
+    print(f"\nResults saved: {out.relative_to(HERE)}")
 
     if args.compare:
         prev = json.loads(Path(args.compare).read_text())
-        print(f"\nPerbandingan vs '{prev['label']}' ({prev['time']}):")
+        print(f"\nCompared with '{prev['label']}' ({prev['time']}):")
         for m in modes:
             if m in prev.get("doc_summary", {}):
                 a, b = prev["doc_summary"][m], doc_summary[m]
