@@ -4,6 +4,7 @@ mod email;
 mod handlers;
 mod models;
 mod rag;
+mod reader;
 mod search;
 
 use actix_web::{middleware, web, App, HttpServer, HttpResponse};
@@ -216,6 +217,7 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/sessions/{id}",      web::delete().to(handlers::admin_delete_session))
                     .route("/admin/documents",                web::get().to(handlers::admin_list_documents))
                     .route("/admin/documents/ingest-url",     web::post().to(handlers::admin_ingest_url))
+                    .route("/admin/documents/preview-url",    web::post().to(handlers::admin_preview_url))
                     .route("/admin/documents/ingest-text",    web::post().to(handlers::admin_ingest_text))
                     .route("/admin/chunks",                   web::get().to(handlers::admin_list_chunks))
                     .route("/admin/documents/{id}",           web::delete().to(handlers::admin_delete_document))
