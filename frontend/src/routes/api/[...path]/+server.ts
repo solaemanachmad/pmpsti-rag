@@ -2,6 +2,11 @@ import type { RequestHandler } from '@sveltejs/kit';
 
 const BACKEND = 'https://pmpsti-rag.onrender.com';
 
+// Vercel function time limit for this proxy. Answers can take a while (Render's free
+// plan needs ~50 s to wake up, plus the LLM), and the default limit is shorter.
+// 60 s is the maximum on Vercel's Hobby plan.
+export const config = { maxDuration: 60 };
+
 // Request headers passed through to the backend.
 const REQUEST_HEADERS = ['Content-Type', 'Accept', 'Authorization', 'X-Guest-Token', 'X-Api-Key', 'Cookie'];
 

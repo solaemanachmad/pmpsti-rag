@@ -130,7 +130,7 @@ npm run dev
 
 Open **http://localhost:5173**.
 
-`frontend/.env` may set `PUBLIC_API_URL`. Leave it empty locally so requests go through the `/api` dev proxy.
+The frontend always calls the backend through its own `/api` route (the Vite dev proxy locally, `src/routes/api/[...path]/+server.ts` on Vercel), so no API URL needs to be configured.
 
 ---
 
@@ -231,7 +231,7 @@ create branch → commit → push → open PR → test Preview → merge into ma
 
 The code flow never changes database contents and never uses `PROD_DATABASE_URL`.
 
-> Vercel environment variables are set separately for Preview and Production (Vercel → Settings → Environment Variables). Without `PUBLIC_API_URL`, the frontend falls back to its built-in `/api` proxy.
+> Vercel environment variables are set separately for Preview and Production (Vercel → Settings → Environment Variables). The frontend needs none: it reaches the backend through its built-in `/api` proxy, which keeps the login cookie first-party (Safari/iOS block third-party cookies).
 
 ### 2. Which database each environment uses
 
