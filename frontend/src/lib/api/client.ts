@@ -14,8 +14,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers,
     credentials: 'include',  // kirim httpOnly cookie otomatis
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json?.error?.message ?? json?.error ?? `HTTP ${res.status}`);
+  // Not every response is JSON (e.g. an empty 404). Parsing it blindly made Safari show
+  // "The string did not match the expected pattern" instead of the real problem.
+  const text = await res.text();
+  let json: any = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+  if (!res.ok) throw new Error(json?.error?.message ?? json?.error ?? `HTTP ${res.status} ${res.statusText}`.trim());
+  if (json === null) throw new Error(`Unexpected response from server (HTTP ${res.status})`);
   return (json.data ?? json) as T;
 }
 
