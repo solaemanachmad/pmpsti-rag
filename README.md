@@ -169,6 +169,19 @@ python regen_embeddings.py --all             # timpa semua embedding
 python regen_embeddings.py                   # hanya isi yang masih NULL
 ```
 
+### Salin embedding antar database (tanpa memanggil Gemini)
+
+Jika embedding sudah dibuat di branch Neon lain (mis. `test-embedding`), salin ke production tanpa regen:
+
+```bash
+# .env di root: DATABASE_URL = sumber, PROD_DATABASE_URL = tujuan
+cd scripts
+python copy_embeddings.py --dry-run   # laporan saja, tidak menulis
+python copy_embeddings.py             # salin (minta konfirmasi 'ya')
+```
+
+Baris dicocokkan berdasarkan `id` **dan** isi (title + content); baris yang berbeda dilewati dan dilaporkan. Buat branch backup production di Neon dulu, dan hapus `PROD_DATABASE_URL` dari `.env` setelah selesai.
+
 ---
 
 ## Perintah Berguna
