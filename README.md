@@ -211,6 +211,37 @@ podman stop pmpsti-db
 
 ---
 
+## Alur Kerja Git & Deploy
+
+`main` = **Production** (`pmpsti-rag.vercel.app`). Perubahan dikerjakan di branch terpisah dan diuji di **Preview** Vercel sebelum masuk Production.
+
+```
+buat branch → push → buka PR → tes Preview → merge ke main → Vercel deploy ke Production otomatis → hapus branch
+```
+
+1. **Buat branch** dari `main` yang terbaru:
+   ```bash
+   git switch main && git pull
+   git switch -c feat/nama-fitur      # atau fix/nama-perbaikan
+   ```
+2. **Commit & push** branch:
+   ```bash
+   git add <file> && git commit -m "feat: deskripsi singkat"
+   git push -u origin feat/nama-fitur
+   ```
+3. **Buka Pull Request** ke `main` di GitHub (tombol *Compare & pull request*).
+4. **Tes Preview** — Vercel otomatis membuat URL Preview untuk branch tersebut (link muncul di PR). Cek di HP dan laptop.
+5. **Merge ke `main`** — klik *Merge pull request* → *Confirm merge*. Vercel otomatis deploy ke Production.
+6. **Hapus branch** — klik *Delete branch* di PR, lalu bersihkan di lokal:
+   ```bash
+   git switch main && git pull
+   git branch -d feat/nama-fitur
+   ```
+
+> Environment variable untuk Preview diatur terpisah dari Production di Vercel → Settings → Environment Variables. Tanpa `PUBLIC_API_URL`, frontend memakai proxy `/api` bawaan.
+
+---
+
 ## Struktur Project
 
 ```
