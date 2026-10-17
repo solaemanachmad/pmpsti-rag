@@ -1,15 +1,15 @@
-import { env } from '$env/dynamic/public';
-
-// Read at call time from dynamic env: a missing PUBLIC_API_URL (e.g. on Vercel
-// Preview) no longer breaks the build and falls back to the /api proxy route.
-const base = () => (env.PUBLIC_API_URL || '') + '/api';
+// Always call the backend through this site's own /api route: the Vite dev proxy
+// locally, and src/routes/api/[...path]/+server.ts on Vercel. Calling the Render
+// backend directly made the login cookie a third-party cookie, which Safari/iOS
+// drop ("Token tidak ditemukan" after every login).
+const BASE = '/api';
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> ?? {})
   };
-  const res = await fetch(`${base()}${path}`, {
+  const res = await fetch(`${BASE}${path}`, {
     ...options,
     headers,
     credentials: 'include',  // kirim httpOnly cookie otomatis
@@ -180,7 +180,7 @@ export function askStream(
 
   (async () => {
     try {
-      const res = await fetch(`${base()}/ask`, {
+      const res = await fetch(`${BASE}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -413,7 +413,7 @@ export function askPublic(
 
   (async () => {
     try {
-      const res = await fetch(`${base()}/ask_public`, {
+      const res = await fetch(`${BASE}/ask_public`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
