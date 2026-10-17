@@ -60,6 +60,32 @@ impl Config {
     }
 }
 
+/// Versi DATABASE_URL yang aman untuk log: password diganti `****`,
+/// query string (mis. `?sslmode=require`) dibuang.
+fn mask_database_url(url: &str) -> String {
+    let strip_query = |s: &str| s.split(['?', '#']).next().unwrap_or("").to_string();
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (Some(s), r),
+        None => (None, url),
+    };
+    // Pisah userinfo dulu (pakai '@' terakhir) supaya '?'/'#' di password
+    // tidak ikut terpotong dan bocor sebagian.
+    let rest = match rest.rsplit_once('@') {
+        Some((userinfo, host)) => {
+            let host = strip_query(host);
+            match userinfo.split_once(':') {
+                Some((user, _password)) => format!("{user}:****@{host}"),
+                None => format!("{userinfo}@{host}"),
+            }
+        }
+        None => strip_query(rest),
+    };
+    match scheme {
+        Some(s) => format!("{s}://{rest}"),
+        None => rest,
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::Builder::from_env(
@@ -70,7 +96,7 @@ async fn main() -> std::io::Result<()> {
 
     log::info!("═══════════════════════════════════════");
     log::info!("  PMPSTI API");
-    log::info!("  Database : {}", cfg.database_url);
+    log::info!("  Database : {}", mask_database_url(&cfg.database_url));
     log::info!("  LLM      : {} ({})", if cfg.llm_backend == "gemini" { &cfg.gemini_model } else { &cfg.llm_model }, cfg.llm_backend);
     log::info!("  Listen   : {}:{}", cfg.host, cfg.port);
     log::info!("═══════════════════════════════════════");
@@ -206,4 +232,38 @@ async fn main() -> std::io::Result<()> {
     .bind(&addr)?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mask_database_url;
+
+    #[test]
+    fn masks_password_and_strips_query() {
+        assert_eq!(
+            mask_database_url("postgresql://neondb_owner:s3cr3t@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require"),
+            "postgresql://neondb_owner:****@ep-x.neon.tech/neondb"
+        );
+    }
+
+    #[test]
+    fn masks_password_with_at_sign() {
+        assert_eq!(
+            mask_database_url("postgres://u:p@ss@localhost:5432/db"),
+            "postgres://u:****@localhost:5432/db"
+        );
+        assert_eq!(
+            mask_database_url("postgres://u:p?ss#x@localhost/db?sslmode=require"),
+            "postgres://u:****@localhost/db"
+        );
+    }
+
+    #[test]
+    fn keeps_url_without_password() {
+        assert_eq!(
+            mask_database_url("postgres://user@localhost/db?sslmode=disable"),
+            "postgres://user@localhost/db"
+        );
+        assert_eq!(mask_database_url("postgres://localhost/db"), "postgres://localhost/db");
+    }
 }
