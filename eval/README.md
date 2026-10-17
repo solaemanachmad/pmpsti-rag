@@ -1,6 +1,6 @@
 # Test questions (RAG evaluation)
 
-`pertanyaan_uji.csv` holds 30 questions with reference answers for measuring the answer quality
+`pertanyaan_uji.csv` holds 33 questions with reference answers for measuring the answer quality
 of PMPSTI RAG. Re-run it whenever the ingest pipeline, chunking, embedding, search, prompt or
 model changes, to see whether results got better or worse.
 
@@ -10,7 +10,7 @@ The questions and answers stay in Indonesian on purpose — that is what student
 
 | Column | Content |
 |---|---|
-| `id` | Q01–Q30 |
+| `id` | Q01–Q33 (Q31–Q33 added on 18 Oct 2026 to test table extraction) |
 | `jenis` | Question type: fakta (fact), daftar (list), hitung (count), prosedur (procedure), perbandingan (comparison), konflik_versi (version conflict), di_luar_cakupan (out of scope), multi_turn |
 | `pertanyaan` | The question as a student would type it |
 | `jawaban_acuan` | The correct answer according to the source |
