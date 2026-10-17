@@ -1,0 +1,247 @@
+{
+  "snapshot_date": "2026-10-17",
+  "database": {
+    "provider": "Neon (PostgreSQL)",
+    "branch": "test-embedding (same content as production on that date)",
+    "endpoint": "ep-calm-dawn-b4n290kt",
+    "postgres_version": "18.6 (653b019)",
+    "extensions": {
+      "plpgsql": "1.0",
+      "vector": "0.8.6"
+    },
+    "vector_index": "HNSW, vector_cosine_ops on documents.embedding",
+    "fulltext": "GIN on to_tsvector('indonesian', content)"
+  },
+  "corpus_fingerprint_sha256": "cac776475ebf75627f920601cf3881a7555f90a03a85251b0d7ed9e48255a9ff",
+  "totals": {
+    "chunks": 343,
+    "documents": 25,
+    "chunks_without_embedding": 0
+  },
+  "by_document_type": [
+    {
+      "document_type": "panduan",
+      "chunks": 191,
+      "documents": 21
+    },
+    {
+      "document_type": "url",
+      "chunks": 151,
+      "documents": 3
+    },
+    {
+      "document_type": "text",
+      "chunks": 1,
+      "documents": 1
+    }
+  ],
+  "chunk_length_chars": {
+    "p5": 116,
+    "p25": 508,
+    "median": 800,
+    "p75": 951,
+    "p95": 1461,
+    "min": 20,
+    "max": 1499,
+    "mean": 762
+  },
+  "chunks_per_document": {
+    "min": 1,
+    "median": 3,
+    "max": 91
+  },
+  "data_quality_issues": {
+    "chunks_with_javascript_code": 55,
+    "chunks_under_200_chars": 31,
+    "exact_duplicate_chunks": 8,
+    "chunks_with_empty_category": 191,
+    "titles_with_glued_section_numbers": 40
+  },
+  "documents": [
+    {
+      "document_id": "appendix/f_org",
+      "document_type": "panduan",
+      "chunks": 2,
+      "total_chars": 1511,
+      "category": ""
+    },
+    {
+      "document_id": "appendix/h_kbk",
+      "document_type": "panduan",
+      "chunks": 11,
+      "total_chars": 5584,
+      "category": ""
+    },
+    {
+      "document_id": "chapter1/introduction",
+      "document_type": "panduan",
+      "chunks": 44,
+      "total_chars": 33144,
+      "category": ""
+    },
+    {
+      "document_id": "chapter2/curricula",
+      "document_type": "panduan",
+      "chunks": 62,
+      "total_chars": 51558,
+      "category": ""
+    },
+    {
+      "document_id": "chapter4/thesis",
+      "document_type": "panduan",
+      "chunks": 9,
+      "total_chars": 4972,
+      "category": ""
+    },
+    {
+      "document_id": "chapter6/sop",
+      "document_type": "panduan",
+      "chunks": 23,
+      "total_chars": 16649,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/absence/index",
+      "document_type": "panduan",
+      "chunks": 5,
+      "total_chars": 2348,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/attendance/index",
+      "document_type": "panduan",
+      "chunks": 2,
+      "total_chars": 1138,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/completion_letter/index",
+      "document_type": "panduan",
+      "chunks": 1,
+      "total_chars": 524,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/ethic_clearance/index",
+      "document_type": "panduan",
+      "chunks": 1,
+      "total_chars": 443,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/gap/index",
+      "document_type": "panduan",
+      "chunks": 6,
+      "total_chars": 2872,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/graduation_doc/index",
+      "document_type": "panduan",
+      "chunks": 4,
+      "total_chars": 1550,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/judicium_letter/index",
+      "document_type": "panduan",
+      "chunks": 2,
+      "total_chars": 665,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/makeup_exam/index",
+      "document_type": "panduan",
+      "chunks": 2,
+      "total_chars": 1190,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/recomendation_letter/index",
+      "document_type": "panduan",
+      "chunks": 1,
+      "total_chars": 758,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/skpi/index",
+      "document_type": "panduan",
+      "chunks": 2,
+      "total_chars": 1034,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/study_extend/index",
+      "document_type": "panduan",
+      "chunks": 2,
+      "total_chars": 945,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/correspondence/thesis_amanment/index",
+      "document_type": "panduan",
+      "chunks": 1,
+      "total_chars": 809,
+      "category": ""
+    },
+    {
+      "document_id": "chapter7/services",
+      "document_type": "panduan",
+      "chunks": 3,
+      "total_chars": 2089,
+      "category": ""
+    },
+    {
+      "document_id": "front/a_editor",
+      "document_type": "panduan",
+      "chunks": 5,
+      "total_chars": 646,
+      "category": ""
+    },
+    {
+      "document_id": "front/b_preface",
+      "document_type": "panduan",
+      "chunks": 3,
+      "total_chars": 2083,
+      "category": ""
+    },
+    {
+      "document_id": "text-160b328d-456e-4526-b5c7-66da9df768c5",
+      "document_type": "text",
+      "chunks": 1,
+      "total_chars": 632,
+      "category": "Lampiran"
+    },
+    {
+      "document_id": "url-6b01d06a-3600-4ab4-acb2-165948c758e6",
+      "document_type": "url",
+      "chunks": 24,
+      "total_chars": 27311,
+      "category": "Website"
+    },
+    {
+      "document_id": "url-78a24db2-dab9-466f-9d11-d7593bd77b70",
+      "document_type": "url",
+      "chunks": 36,
+      "total_chars": 28302,
+      "category": "Informasi"
+    },
+    {
+      "document_id": "url-82b93b54-b95c-457d-9771-c63268fc5f18",
+      "document_type": "url",
+      "chunks": 91,
+      "total_chars": 72765,
+      "category": "Akademik"
+    }
+  ],
+  "query_log_aggregate": {
+    "total_queries": 64,
+    "distinct_queries": 44,
+    "zero_result_queries": 3
+  },
+  "notes": [
+    "Aggregate statistics only: no chunk text, query text or user data is stored here.",
+    "Document ids starting with url-/text- are UUID-based and change on re-ingest; guidebook ids are paths.",
+    "Freeze this exact state as a Neon branch (e.g. eval-snapshot-2026-10-17) to reproduce the results."
+  ]
+}
