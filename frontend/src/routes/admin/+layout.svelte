@@ -35,7 +35,7 @@
           </span>
         {:else}
           <ShieldCheck size={16} class="text-muted-foreground" />
-          <span class="flex-1 text-sm font-semibold">Admin sections</span>
+          <span class="flex-1 text-sm font-semibold">Admin</span>
         {/if}
         <ChevronDown size={16} class="text-muted-foreground shrink-0" />
       </button>
@@ -48,7 +48,7 @@
     </div>
   </div>
 
-  <Modal open={switcherOpen} title="Admin sections" on:close={() => (switcherOpen = false)}>
+  <Modal open={switcherOpen} title="Admin" on:close={() => (switcherOpen = false)}>
     <nav aria-label="Admin sections" class="space-y-4 -mt-1">
       {#each adminNav as group}
         <div>
