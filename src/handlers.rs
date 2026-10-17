@@ -641,11 +641,8 @@ pub async fn login(
         created_at:   user.created_at,
     };
 
-    // Set httpOnly cookie — tidak bisa diakses JavaScript
-    let cookie = format!(
-        "auth_token={}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age={}",
-        token, expires_in
-    );
+    // httpOnly cookie — not readable from JavaScript
+    let cookie = auth_cookie(&req, &token, expires_in);
 
     HttpResponse::Ok()
         .append_header(("Set-Cookie", cookie))
@@ -657,9 +654,27 @@ pub async fn login(
         }))
 }
 
-pub async fn logout_handler(_req: HttpRequest) -> HttpResponse {
-    // Clear httpOnly cookie
-    let clear = "auth_token=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0";
+/// Build the `auth_token` cookie. Production (https) needs `Secure; SameSite=None`
+/// because the frontend (Vercel) and backend (Render) are on different domains.
+/// Local development over plain `http://localhost` gets `SameSite=Lax` without
+/// `Secure`: Safari drops `Secure` cookies on http://localhost, so login looked
+/// successful but every next request failed with "Token tidak ditemukan".
+fn auth_cookie(req: &HttpRequest, value: &str, max_age: u64) -> String {
+    let info = req.connection_info();
+    let attributes = cookie_attributes(info.scheme(), info.host());
+    format!("auth_token={value}; HttpOnly; {attributes}; Path=/; Max-Age={max_age}")
+}
+
+/// `Secure; SameSite=None` unless the request is plain http to localhost / 127.0.0.1.
+fn cookie_attributes(scheme: &str, host: &str) -> &'static str {
+    let hostname = host.rsplit_once(':').map_or(host, |(name, _port)| name);
+    let local = matches!(hostname, "localhost" | "127.0.0.1" | "[::1]");
+    if scheme == "http" && local { "SameSite=Lax" } else { "Secure; SameSite=None" }
+}
+
+pub async fn logout_handler(req: HttpRequest) -> HttpResponse {
+    // Clear the httpOnly cookie (same attributes as when it was set)
+    let clear = auth_cookie(&req, "", 0);
     HttpResponse::Ok()
         .append_header(("Set-Cookie", clear))
         .json(serde_json::json!({"data": {"message": "Logout berhasil"}}))
@@ -2149,7 +2164,16 @@ pub async fn admin_ingest_text(
 
 #[cfg(test)]
 mod tests {
-    use super::extract_page;
+    use super::{cookie_attributes, extract_page};
+
+    #[test]
+    fn cookie_is_secure_except_on_local_http() {
+        assert_eq!(cookie_attributes("https", "pmpsti-rag.onrender.com"), "Secure; SameSite=None");
+        assert_eq!(cookie_attributes("http", "pmpsti-rag.onrender.com"), "Secure; SameSite=None");
+        assert_eq!(cookie_attributes("http", "localhost:5173"), "SameSite=Lax");
+        assert_eq!(cookie_attributes("http", "127.0.0.1:8080"), "SameSite=Lax");
+        assert_eq!(cookie_attributes("https", "localhost:5173"), "Secure; SameSite=None");
+    }
 
     // Real pages saved on 2026-10-18, so parsing can be tested without the network.
     const TENAGA_PENDIDIK: &str = include_str!("../tests/fixtures/tenaga_pendidik.html");
