@@ -18,6 +18,7 @@ Corpus statistics for the 2026-10-17 state are in `data/corpus_2026-10-17.json`.
 | Generator (LLM) | Gemini `gemini-3.5-flash-lite` |
 | Search modes | semantic (cosine), keyword (`ts_rank`), hybrid (0.7 · cosine + 0.3 · ts_rank), RRF (k = 60) |
 | Corpus (2026-10-17) | 343 chunks, 25 documents (21 guidebook pages, 3 web pages, 1 text); median chunk 800 chars; fingerprint `cac776475ebf…` |
+| Frozen snapshot | Neon branch `eval-snapshot-2026-10-17` (no expiration) — verified identical to `test-embedding` on 2026-10-17: same content fingerprint and identical embeddings for all 343 chunks. All E0–E4 numbers come from this state. |
 
 ## Test sets
 
@@ -128,8 +129,8 @@ Remaining failures:
   between runs).
 - **Single corpus and language** (Indonesian academic guidebook); 16 % of chunks were JavaScript junk
   from early web ingestion (fixed in later steps) — report data cleaning separately from retrieval changes.
-- **Same database as production**: `test-embedding` was a copy of production; freeze it as a Neon
-  snapshot branch so the numbers can be reproduced.
+- **Same database as production**: `test-embedding` was a copy of production. Its state is frozen as
+  Neon branch `eval-snapshot-2026-10-17` (verified identical), so the numbers can be reproduced.
 
 ## How to reproduce
 

@@ -242,6 +242,6 @@
   "notes": [
     "Aggregate statistics only: no chunk text, query text or user data is stored here.",
     "Document ids starting with url-/text- are UUID-based and change on re-ingest; guidebook ids are paths.",
-    "Freeze this exact state as a Neon branch (e.g. eval-snapshot-2026-10-17) to reproduce the results."
+    "Frozen as Neon branch eval-snapshot-2026-10-17 (no expiration); verified on 2026-10-17: same content fingerprint and identical embeddings (md5 of all vectors) as test-embedding."
   ]
 }
