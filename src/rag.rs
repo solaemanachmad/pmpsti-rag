@@ -305,11 +305,9 @@ impl RagEngine {
         QueryType::General
     }
 
-    /// Cari chunks dengan strategi retrieval modern:
-    /// 1. RRF (default) / semantic / keyword sesuai search_mode
-    /// 2. Query-type detection → fetch semua chunks untuk list/procedural
-    /// 3. Comparison → fetch dari top-N dokumen berbeda
-    /// 4. Smart document expansion → expand doc multi-chunk yang ter-hit
+    /// Cari chunks — hanya peringkat, tanpa ekspansi.
+    /// hybrid (default) / rrf / semantic / keyword sesuai search_mode.
+    /// Ekspansi konteks dilakukan SETELAH filter, di `build_context`.
     pub async fn search_chunks(
         &self,
         query:           &str,
@@ -317,110 +315,88 @@ impl RagEngine {
         search_mode:     &str,
         top_k:           i64,
     ) -> Result<Vec<SearchResult>> {
-        let initial_chunks = match search_mode {
+        Ok(match search_mode {
             "semantic" => self.search.search_semantic(query, top_k, category_filter).await?,
             "keyword"  => self.search.search_keyword(query, top_k, category_filter).await?,
-            "hybrid"   => self.search.search(query, top_k, category_filter).await?,
-            _          => self.search.search_rrf(query, top_k, category_filter).await?,
-        };
+            "rrf"      => self.search.search_rrf(query, top_k, category_filter).await?,
+            _          => self.search.search(query, top_k, category_filter).await?, // hybrid
+        })
+    }
 
-        if initial_chunks.is_empty() {
-            return Ok(vec![]);
+    /// Satukan chunk terpilih menjadi SATU konteks per dokumen (= satu kartu sumber,
+    /// nomor [n] di jawaban = kartu ke-n), lalu tambah konteks di sekitarnya:
+    /// - List / Procedural: chunk lain dari dokumen yang sama (urutan asli), dalam budget
+    /// - lainnya          : tetangga ±1 dari setiap chunk yang cocok
+    /// Chunk yang cocok selalu diprioritaskan — tidak pernah tergeser oleh ekspansi.
+    pub async fn build_context(&self, query: &str, hits: &[&SearchResult]) -> Vec<SearchResult> {
+        if hits.is_empty() {
+            return vec![];
+        }
+        let expand_whole_doc = matches!(
+            self.classify_query(query).await,
+            QueryType::List | QueryType::Procedural
+        );
+        let budget_chars: usize = if expand_whole_doc { 14_000 } else { 8_000 };
+
+        // Kelompokkan per dokumen, urut sesuai peringkat chunk terbaiknya
+        let mut groups: Vec<(&SearchResult, Vec<i32>)> = Vec::new();
+        for hit in hits {
+            let idx = hit.chunk_index.unwrap_or(0);
+            match groups.iter_mut().find(|(lead, _)| lead.document_id == hit.document_id) {
+                Some((_, idxs)) => idxs.push(idx),
+                None => groups.push((hit, vec![idx])),
+            }
         }
 
-        let query_type = self.classify_query(query).await;
+        let doc_ids: Vec<String> = groups.iter().map(|(lead, _)| lead.document_id.clone()).collect();
+        let all_chunks = self.search.db.fetch_all_chunks_for_documents(&doc_ids).await.unwrap_or_default();
+        let per_doc_budget = budget_chars / groups.len();
 
-        // ── List & Procedural: fetch semua chunks dari matching docs ─────
-        // List:       kerjasama, mata kuliah, dosen → harus lengkap semua entri
-        // Procedural: syarat masuk, cara daftar     → harus lengkap semua langkah
-        if matches!(query_type, QueryType::List | QueryType::Procedural) {
-            let hit_doc_ids: Vec<String> = {
-                let mut seen = std::collections::HashSet::new();
-                initial_chunks.iter()
-                    .filter(|c| !c.document_id.is_empty())
-                    .filter_map(|c| {
-                        if seen.insert(c.document_id.clone()) { Some(c.document_id.clone()) }
-                        else { None }
-                    })
-                    .collect()
-            };
-            let mut all_chunks = self.search.db
-                .fetch_all_chunks_for_documents(&hit_doc_ids)
-                .await
-                .unwrap_or(initial_chunks);
-            let mut seen_keys = std::collections::HashSet::new();
-            all_chunks.retain(|c| seen_keys.insert((c.document_id.clone(), c.chunk_index)));
-            // Urut: skor tertinggi di depan, lalu per chunk_index (urutan asli)
-            all_chunks.sort_by(|a, b| {
-                b.score.partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.chunk_index.cmp(&b.chunk_index))
-            });
-            return Ok(all_chunks);
-        }
-
-        // ── Comparison: pastikan minimal 2 dokumen berbeda ter-representasi ─
-        if matches!(query_type, QueryType::Comparison) {
-            // Ambil top-2 dokumen berbeda, fetch semua chunk dari masing-masing
-            let mut seen_docs = std::collections::HashSet::new();
-            let top_doc_ids: Vec<String> = initial_chunks.iter()
-                .filter(|c| !c.document_id.is_empty())
-                .filter_map(|c| {
-                    if seen_docs.insert(c.document_id.clone()) { Some(c.document_id.clone()) }
-                    else { None }
-                })
-                .take(2)
+        groups.into_iter().map(|(lead, hit_idxs)| {
+            let doc_chunks: Vec<&SearchResult> = all_chunks.iter()
+                .filter(|c| c.document_id == lead.document_id)
                 .collect();
-            if top_doc_ids.len() >= 2 {
-                let mut all_chunks = self.search.db
-                    .fetch_all_chunks_for_documents(&top_doc_ids)
-                    .await
-                    .unwrap_or(initial_chunks);
-                let mut seen_keys = std::collections::HashSet::new();
-                all_chunks.retain(|c| seen_keys.insert((c.document_id.clone(), c.chunk_index)));
-                all_chunks.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-                return Ok(all_chunks);
-            }
-            // Hanya 1 dokumen — lanjut ke smart expansion biasa
-        }
+            let content_of = |i: i32| doc_chunks.iter()
+                .find(|c| c.chunk_index.unwrap_or(0) == i)
+                .map(|c| c.content.as_str());
 
-        // ── Smart document expansion (General & Definition) ──────────────
-        // Expand dokumen yang:
-        // (a) 2+ chunks-nya ter-hit (dokumen sangat relevan), ATAU
-        // (b) salah satu chunk-nya bukan chunk_index=0 (ada prefix yang belum diambil)
-        let mut doc_hit_count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut doc_has_nonzero_chunk: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for c in &initial_chunks {
-            if !c.document_id.is_empty() {
-                *doc_hit_count.entry(c.document_id.clone()).or_insert(0) += 1;
-                if c.chunk_index.unwrap_or(0) > 0 {
-                    doc_has_nonzero_chunk.insert(c.document_id.clone());
+            // Prioritas: chunk yang cocok → tetangganya → (List/Procedural) sisa dokumen
+            let mut priority: Vec<i32> = hit_idxs.clone();
+            for &i in &hit_idxs {
+                priority.extend([i - 1, i + 1]);
+            }
+            if expand_whole_doc {
+                priority.extend(doc_chunks.iter().map(|c| c.chunk_index.unwrap_or(0)));
+            }
+
+            let mut chosen: Vec<i32> = Vec::new();
+            let mut used = 0usize;
+            for i in priority {
+                if chosen.contains(&i) {
+                    continue;
                 }
+                let Some(text) = content_of(i) else { continue };
+                // Chunk yang cocok selalu masuk; ekspansi hanya selama budget cukup
+                if !hit_idxs.contains(&i) && used + text.len() > per_doc_budget {
+                    continue;
+                }
+                used += text.len();
+                chosen.push(i);
             }
-        }
-        let expand_ids: Vec<String> = doc_hit_count.into_iter()
-            .filter(|(id, count)| *count >= 2 || doc_has_nonzero_chunk.contains(id))
-            .map(|(id, _)| id)
-            .collect();
+            chosen.sort_unstable();
 
-        if expand_ids.is_empty() {
-            return Ok(initial_chunks);
-        }
-
-        let mut expanded = self.search.db
-            .fetch_all_chunks_for_documents(&expand_ids)
-            .await
-            .unwrap_or_default();
-        // Tambahkan chunks dari dokumen lain yang tidak di-expand
-        for c in initial_chunks {
-            if !expand_ids.contains(&c.document_id) {
-                expanded.push(c);
+            let mut content = String::new();
+            for (n, &i) in chosen.iter().enumerate() {
+                if n > 0 {
+                    content.push_str(if i == chosen[n - 1] + 1 { "\n\n" } else { "\n\n[…]\n\n" });
+                }
+                content.push_str(content_of(i).unwrap_or_default());
             }
-        }
-        // Deduplicate
-        let mut seen_keys = std::collections::HashSet::new();
-        expanded.retain(|c| seen_keys.insert((c.document_id.clone(), c.chunk_index)));
-        Ok(expanded)
+            if content.is_empty() {
+                content = lead.content.clone(); // dokumen tidak ter-fetch: pakai chunk aslinya
+            }
+            SearchResult { content, ..lead.clone() }
+        }).collect()
     }
 
     /// Panggil LLM dengan chunks yang sudah difilter oleh handler.

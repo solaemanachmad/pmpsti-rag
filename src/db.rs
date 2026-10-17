@@ -530,6 +530,7 @@ impl Database {
 
     // ════════════════════════════════════════════════════════════
     //  SEARCH — PURE FULL-TEXT (BM25)
+    //  Dipakai mode "keyword" dan sebagai fallback saat embedding Gemini gagal.
     // ════════════════════════════════════════════════════════════
     pub async fn search_fulltext(
         &self,
@@ -537,23 +538,26 @@ impl Database {
         limit: i64,
         category_filter: Option<&str>,
     ) -> Result<Vec<SearchResult>, sqlx::Error> {
+        // OR antar kata (bukan AND seperti plainto_tsquery) + tanpa kata tanya:
+        // hit@5 dokumen naik dari 7% ke 83% di scripts/eval_retrieval.py.
+        let Some(tsquery) = keyword_tsquery(query_text) else { return Ok(vec![]) };
         let rows = sqlx::query(
             "SELECT document_id, title, content, category, subcategory,
                     COALESCE(source_url, '') AS source_url,
                     page_number, chunk_index,
                     ts_rank(
                         to_tsvector('indonesian', content),
-                        plainto_tsquery('indonesian', $1),
+                        to_tsquery('indonesian', $1),
                         1
                     )::float8 AS score
              FROM documents
              WHERE to_tsvector('indonesian', content)
-                   @@ plainto_tsquery('indonesian', $1)
+                   @@ to_tsquery('indonesian', $1)
                AND ($3::text IS NULL OR category = $3)
              ORDER BY score DESC
              LIMIT $2",
         )
-        .bind(query_text)
+        .bind(&tsquery)
         .bind(limit)
         .bind(category_filter)
         .fetch_all(&self.pool)
@@ -1331,6 +1335,50 @@ impl Database {
 // ══════════════════════════════════════════════════════════════════
 //  PRIVATE HELPERS
 // ══════════════════════════════════════════════════════════════════
+
+/// Kata tanya & kata fungsi yang membuat pencarian kata kunci gagal bila wajib cocok.
+/// Sama dengan STOPWORDS di scripts/eval_retrieval.py.
+const KEYWORD_STOPWORDS: &[&str] = &[
+    "apa", "apakah", "siapa", "bagaimana", "berapa", "kapan", "mana", "dimana", "di", "ke",
+    "dari", "dan", "atau", "yang", "untuk", "dengan", "pada", "dalam", "ini", "itu", "adalah",
+    "ada", "saja", "sudah", "belum", "bisa", "dapat", "harus", "akan", "juga", "saya", "kamu",
+    "kami", "mohon", "tolong", "sebutkan", "jelaskan", "semua", "beserta", "tentang", "serta",
+    "jika", "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are", "do",
+    "does", "did", "how", "what", "who", "which", "when", "where", "can", "i", "my", "me",
+    "with", "about",
+];
+
+/// Ubah pertanyaan bebas menjadi tsquery OR ("dosen | pembimbing | tesis").
+/// Hanya huruf/angka ASCII yang lolos, jadi aman diteruskan ke `to_tsquery`.
+/// `None` jika tidak ada kata yang tersisa.
+fn keyword_tsquery(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let mut terms: Vec<&str> = Vec::new();
+    for word in lower.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if word.len() > 1 && !KEYWORD_STOPWORDS.contains(&word) && !terms.contains(&word) {
+            terms.push(word);
+        }
+    }
+    if terms.is_empty() { None } else { Some(terms.join(" | ")) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyword_tsquery;
+
+    #[test]
+    fn keyword_tsquery_drops_question_words_and_joins_with_or() {
+        assert_eq!(keyword_tsquery("Bagaimana alur ujian tesis?").as_deref(), Some("alur | ujian | tesis"));
+        assert_eq!(keyword_tsquery("berapa jumlah kerjasama PMPSTI?").as_deref(), Some("jumlah | kerjasama | pmpsti"));
+    }
+
+    #[test]
+    fn keyword_tsquery_strips_operators_and_duplicates() {
+        assert_eq!(keyword_tsquery("tesis & (tesis) | !'drop'").as_deref(), Some("tesis | drop"));
+        assert_eq!(keyword_tsquery("apa?"), None);
+        assert_eq!(keyword_tsquery("   "), None);
+    }
+}
 
 fn rows_to_results(rows: Vec<sqlx::postgres::PgRow>) -> Vec<SearchResult> {
     rows.into_iter()
