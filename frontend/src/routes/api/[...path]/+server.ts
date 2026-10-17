@@ -2,51 +2,71 @@ import type { RequestHandler } from '@sveltejs/kit';
 
 const BACKEND = 'https://pmpsti-rag.onrender.com';
 
-async function proxy(request: Request, path: string): Promise<Response> {
-  const url = `${BACKEND}/api/${path}`;
+// Request headers passed through to the backend.
+const REQUEST_HEADERS = ['Content-Type', 'Accept', 'Authorization', 'X-Guest-Token', 'X-Api-Key', 'Cookie'];
 
-  // Forward semua header relevan
-  const headers: Record<string, string> = {
-    'Content-Type': request.headers.get('Content-Type') ?? 'application/json',
-  };
+// Response headers that must not be copied: hop-by-hop headers, and headers
+// that describe the backend's wire encoding (fetch already decompressed the
+// body, so the runtime recomputes these). Set-Cookie is handled separately.
+const SKIP_RESPONSE_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'transfer-encoding',
+  'te',
+  'trailer',
+  'upgrade',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'content-encoding',
+  'content-length',
+  'set-cookie',
+]);
 
-  const headersToForward = ['Authorization', 'X-Guest-Token', 'X-Api-Key', 'Cookie'];
-  for (const h of headersToForward) {
+async function proxy(request: Request, path: string, search: string): Promise<Response> {
+  const url = `${BACKEND}/api/${path}${search}`;
+
+  const headers = new Headers();
+  for (const h of REQUEST_HEADERS) {
     const val = request.headers.get(h);
-    if (val) headers[h] = val;
+    if (val) headers.set(h, val);
   }
 
   const body = request.method !== 'GET' && request.method !== 'HEAD'
-    ? await request.text()
+    ? await request.arrayBuffer()
     : undefined;
 
   const res = await fetch(url, {
     method: request.method,
     headers,
     body,
+    redirect: 'manual',
   });
 
-  const resBody = await res.text();
+  const resHeaders = new Headers();
+  res.headers.forEach((value, key) => {
+    if (!SKIP_RESPONSE_HEADERS.has(key)) resHeaders.set(key, value);
+  });
+  // Forward every cookie unchanged. The backend sets no Domain attribute, so the
+  // browser stores it for this frontend's host: a first-party cookie that
+  // Safari/iOS and other third-party-cookie blockers keep.
+  for (const cookie of res.headers.getSetCookie()) {
+    resHeaders.append('Set-Cookie', cookie);
+  }
 
-  return new Response(resBody, {
+  // Stream the body instead of buffering it; null-body statuses get no body.
+  const noBody = request.method === 'HEAD' || [101, 204, 205, 304].includes(res.status);
+  return new Response(noBody ? null : res.body, {
     status: res.status,
-    headers: {
-      'Content-Type': res.headers.get('Content-Type') ?? 'application/json',
-    },
+    statusText: res.statusText,
+    headers: resHeaders,
   });
 }
 
-export const GET: RequestHandler = ({ request, params }) =>
-  proxy(request, params.path ?? '');
+const handler: RequestHandler = ({ request, params, url }) =>
+  proxy(request, params.path ?? '', url.search);
 
-export const POST: RequestHandler = ({ request, params }) =>
-  proxy(request, params.path ?? '');
-
-export const PATCH: RequestHandler = ({ request, params }) =>
-  proxy(request, params.path ?? '');
-
-export const DELETE: RequestHandler = ({ request, params }) =>
-  proxy(request, params.path ?? '');
-
-export const PUT: RequestHandler = ({ request, params }) =>
-  proxy(request, params.path ?? '');
+export const GET = handler;
+export const POST = handler;
+export const PATCH = handler;
+export const DELETE = handler;
+export const PUT = handler;
