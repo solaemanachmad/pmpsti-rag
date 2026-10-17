@@ -50,7 +50,7 @@ impl Config {
             llm_api_url:    std::env::var("LLM_API_URL").unwrap_or_default(),
             gemini_api_key: std::env::var("GEMINI_API_KEY").unwrap_or_default(),
             gemini_model:   std::env::var("GEMINI_MODEL")
-                .unwrap_or_else(|_| "gemini-2.0-flash-lite".to_string()),
+                .unwrap_or_else(|_| "gemini-3.5-flash-lite".to_string()),
             resend_api_key: std::env::var("RESEND_API_KEY").unwrap_or_default(),
             app_base_url:   std::env::var("APP_BASE_URL")
                 .unwrap_or_else(|_| "https://pmpsti-rag.vercel.app".to_string()),

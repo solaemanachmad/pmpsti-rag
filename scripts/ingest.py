@@ -47,13 +47,15 @@ from pgvector.psycopg2 import register_vector
 from PIL import Image
 from psycopg2.extras import execute_values
 from text_enrichment import enrich_text, enrich_chunk
+from gemini_embed import GeminiEmbeddings
 
 # ──────────────────────────────────────────────────────────────────
 #  KONFIGURASI
 # ──────────────────────────────────────────────────────────────────
 
 BASE_DIR = Path(__file__).resolve().parent.parent / "docs"
-DB_URL   = "postgresql://admin:admin@localhost:5432/pmpsti_rag"
+# Bisa di-override lewat env DATABASE_URL (mis. Neon) atau argumen --db
+DB_URL   = os.environ.get("DATABASE_URL", "postgresql://admin:admin@localhost:5432/pmpsti_rag")
 
 MIN_IMAGE_WIDTH  = 100
 MIN_IMAGE_HEIGHT = 100
@@ -89,9 +91,25 @@ if sys.platform == "win32":
 #  EMBEDDING MODEL  (load sekali, dipakai bersama)
 # ──────────────────────────────────────────────────────────────────
 
-print("Loading AI Model (multilingual-e5-base)...")
-embeddings_model = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-base")
-print("[INFO] Model siap.\n")
+# 1) Embedding yang DISIMPAN ke DB → Gemini gemini-embedding-001 (768-dim).
+#    WAJIB sama dengan model yang dipakai backend Rust untuk meng-embed pertanyaan.
+embeddings_model = GeminiEmbeddings(task_type="RETRIEVAL_DOCUMENT")
+
+# 2) Model lokal HANYA untuk SemanticChunker (menentukan batas chunk).
+#    Vektornya tidak disimpan, jadi boleh beda model dan tidak memakan kuota Gemini.
+#    Set CHUNKER_MODEL=gemini untuk memakai Gemini juga (lebih banyak request API).
+_chunker_model = None
+
+def get_chunker_model():
+    global _chunker_model
+    if _chunker_model is None:
+        if os.environ.get("CHUNKER_MODEL", "local") == "gemini":
+            _chunker_model = GeminiEmbeddings(task_type="SEMANTIC_SIMILARITY")
+        else:
+            print("Loading model lokal untuk chunking (multilingual-e5-base)...")
+            _chunker_model = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-base")
+            print("[INFO] Model chunker siap.\n")
+    return _chunker_model
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -232,7 +250,7 @@ def build_splitters():
         ("#", "Chapter"), ("##", "Subchapter"), ("###", "Section")
     ])
     semantic_chunker = SemanticChunker(
-        embeddings_model,
+        get_chunker_model(),
         breakpoint_threshold_type="percentile"
     )
     fallback_splitter = RecursiveCharacterTextSplitter(
@@ -295,7 +313,7 @@ def chunks_to_records(
         ]
         hierarchy_str = " > ".join(hierarchy)
 
-        # Prefix E5 wajib untuk dokumen yang disimpan
+        # Teks + breadcrumb untuk embedding (tanpa prefix E5 — tidak dipakai Gemini)
         text_for_embed = enrich_chunk(text_content, metadata, document_id)
         title = f"{document_id} ({hierarchy_str})" if hierarchy_str else document_id
 

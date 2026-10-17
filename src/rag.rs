@@ -195,8 +195,10 @@ impl RagEngine {
     async fn classify_query_llm(&self, query: &str) -> Option<QueryType> {
         let api_key = std::env::var("GEMINI_API_KEY").ok()?;
 
-        // Gunakan gemini-2.0-flash-lite — paling murah, cukup untuk klasifikasi
-        let model = "gemini-2.0-flash-lite";
+        // Model klasifikasi: GEMINI_CLASSIFY_MODEL > GEMINI_MODEL > default flash-lite
+        let model = std::env::var("GEMINI_CLASSIFY_MODEL")
+            .or_else(|_| std::env::var("GEMINI_MODEL"))
+            .unwrap_or_else(|_| "gemini-3.5-flash-lite".to_string());
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
             model
