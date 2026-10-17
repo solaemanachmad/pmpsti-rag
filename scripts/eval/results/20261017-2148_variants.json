@@ -1,0 +1,1016 @@
+{
+  "label": "variants",
+  "time": "20261017-2148",
+  "db_host": "ep-calm-dawn-b4n290kt-pooler.c-6.us-east-2.aws.neon.tech",
+  "doc_summary": {
+    "semantic": {
+      "n": 42,
+      "hit@1": 0.8809523809523809,
+      "hit@5": 0.9761904761904762,
+      "mrr": 0.9214285714285715
+    },
+    "hybrid": {
+      "n": 42,
+      "hit@1": 0.9047619047619048,
+      "hit@5": 0.9761904761904762,
+      "mrr": 0.9333333333333333
+    },
+    "rrf": {
+      "n": 42,
+      "hit@1": 0.7380952380952381,
+      "hit@5": 0.9285714285714286,
+      "mrr": 0.8326719576719577
+    },
+    "hybrid_v2": {
+      "n": 42,
+      "hit@1": 0.8809523809523809,
+      "hit@5": 0.9761904761904762,
+      "mrr": 0.9214285714285715
+    },
+    "hybrid_v2_w05": {
+      "n": 42,
+      "hit@1": 0.8809523809523809,
+      "hit@5": 0.9761904761904762,
+      "mrr": 0.9214285714285715
+    },
+    "rrf_w03": {
+      "n": 42,
+      "hit@1": 0.8333333333333334,
+      "hit@5": 0.9285714285714286,
+      "mrr": 0.8678571428571429
+    },
+    "rrf_w05": {
+      "n": 42,
+      "hit@1": 0.8095238095238095,
+      "hit@5": 0.8809523809523809,
+      "mrr": 0.8508597883597885
+    }
+  },
+  "answer_summary": {
+    "semantic": 0.9047619047619048,
+    "hybrid": 0.9523809523809523,
+    "rrf": 0.8571428571428571,
+    "hybrid_v2": 0.9047619047619048,
+    "hybrid_v2_w05": 0.9047619047619048,
+    "rrf_w03": 0.8571428571428571,
+    "rrf_w05": 0.8571428571428571
+  },
+  "doc_questions": [
+    {
+      "id": "coop-count",
+      "q": "berapa jumlah kerjasama PMPSTI?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 2,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 2
+      }
+    },
+    {
+      "id": "coop-list",
+      "q": "sebutkan semua 13 mitra kerjasama PMPSTI beserta periodanya",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "coop-partners",
+      "q": "siapa saja mitra kerjasama PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "coop-tunghai",
+      "q": "Tunghai University kerjasama PMPSTI",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "coop-docs-typo",
+      "q": "berapa jumlah dokumen kerjsamasa?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": null,
+        "hybrid": null,
+        "rrf": null,
+        "hybrid_v2": null,
+        "hybrid_v2_w05": null,
+        "rrf_w03": null,
+        "rrf_w05": null
+      }
+    },
+    {
+      "id": "coop-intl-en",
+      "q": "Which international partners does PMPSTI collaborate with?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 2,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": null,
+        "rrf_w05": null
+      }
+    },
+    {
+      "id": "lect-tumiran-prof",
+      "q": "Bapak Tumiran apakah sudah guru besar?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "lect-insap-field",
+      "q": "Apa bidang keilmuan P. Insap Santosa?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "lect-insap-rank",
+      "q": "Insap Santosa jabatan fungsional",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "lect-list",
+      "q": "daftar lengkap dosen PMPSTI nama NIP jabatan fungsional",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "lect-who-en",
+      "q": "Who are the professors teaching in PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 2,
+        "hybrid": 2,
+        "rrf": 1,
+        "hybrid_v2": 2,
+        "hybrid_v2_w05": 2,
+        "rrf_w03": 4,
+        "rrf_w05": 8
+      }
+    },
+    {
+      "id": "ewmp-rudy",
+      "q": "rata-rata ewmp Bapak Rudy Hartanto berapa?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "ewmp-what",
+      "q": "Apa itu EWMP dosen?",
+      "type": "policy",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "tendik-email",
+      "q": "Apa email Juni Paryadi?",
+      "type": "lookup",
+      "ingested": false,
+      "ranks": {
+        "semantic": null,
+        "hybrid": null,
+        "rrf": null,
+        "hybrid_v2": null,
+        "hybrid_v2_w05": null,
+        "rrf_w03": null,
+        "rrf_w05": null
+      }
+    },
+    {
+      "id": "tendik-count",
+      "q": "Berapa jumlah tenaga kependidikan DTETI?",
+      "type": "count",
+      "ingested": false,
+      "ranks": {
+        "semantic": null,
+        "hybrid": null,
+        "rrf": null,
+        "hybrid_v2": null,
+        "hybrid_v2_w05": null,
+        "rrf_w03": null,
+        "rrf_w05": null
+      }
+    },
+    {
+      "id": "kbk-groups",
+      "q": "Apa saja Kelompok Bidang Keahlian (KBK) di PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 9,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 5,
+        "rrf_w05": 9
+      }
+    },
+    {
+      "id": "org-kaprodi",
+      "q": "Siapa ketua program studi PMPSTI?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "editors",
+      "q": "Siapa tim penyusun buku panduan akademik PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 5,
+        "hybrid": 5,
+        "rrf": 9,
+        "hybrid_v2": 5,
+        "hybrid_v2_w05": 5,
+        "rrf_w03": null,
+        "rrf_w05": null
+      }
+    },
+    {
+      "id": "curr-structure",
+      "q": "Struktur Kurikulum PMPSTI Berbasis Perkuliahan",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "curr-profile",
+      "q": "Apa profil lulusan PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 2,
+        "hybrid": 2,
+        "rrf": 2,
+        "hybrid_v2": 2,
+        "hybrid_v2_w05": 2,
+        "rrf_w03": 2,
+        "rrf_w05": 2
+      }
+    },
+    {
+      "id": "curr-credits",
+      "q": "Berapa SKS yang harus ditempuh untuk lulus magister PMPSTI?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "curr-cpl",
+      "q": "Apa saja capaian pembelajaran lulusan (CPL) PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "curr-credits-en",
+      "q": "How many credits do I need to graduate?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "intro-identity",
+      "q": "Kapan program studi PMPSTI didirikan?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 2,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "intro-accred",
+      "q": "Apa akreditasi program studi PMPSTI?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 4,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "thesis-supervisor",
+      "q": "Bagaimana ketentuan dosen pembimbing tesis?",
+      "type": "policy",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "thesis-exam",
+      "q": "Bagaimana alur ujian tesis?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "sop-after-defense",
+      "q": "Apa yang harus dilakukan setelah sidang pendadaran?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "sop-graduation",
+      "q": "Bagaimana cara mendaftar wisuda?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "sop-library",
+      "q": "Bagaimana bebas pustaka dan unggah mandiri di Simaster?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-services",
+      "q": "Layanan persuratan akademik apa saja yang tersedia?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 2,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-leave",
+      "q": "izin cuti kuliah?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-leave-en",
+      "q": "How do I apply for academic leave?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 2,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-absence",
+      "q": "Bagaimana mengajukan izin tidak mengikuti perkuliahan?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-attendance",
+      "q": "Bagaimana cara klaim presensi?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-makeup",
+      "q": "Bagaimana prosedur pengajuan ujian susulan?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-skl",
+      "q": "Bagaimana mendapatkan surat keterangan lulus?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-judicium",
+      "q": "Bagaimana mengajukan surat keterangan yudisium?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 2,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-graddoc",
+      "q": "Bagaimana pengambilan dokumen wisuda?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-ethics",
+      "q": "Bagaimana mengajukan surat pengantar ethical clearance?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-skpi",
+      "q": "Bagaimana mengajukan aktivitas dan prestasi untuk SKPI?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-extend",
+      "q": "Bagaimana perpanjangan tugas belajar?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    },
+    {
+      "id": "c7-title-change",
+      "q": "Bagaimana prosedur perubahan judul tesis?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 2,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 2,
+        "hybrid_v2_w05": 2,
+        "rrf_w03": 2,
+        "rrf_w05": 2
+      }
+    },
+    {
+      "id": "c7-reference",
+      "q": "Bagaimana meminta surat rekomendasi atau reference letter?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "hybrid": 1,
+        "rrf": 1,
+        "hybrid_v2": 1,
+        "hybrid_v2_w05": 1,
+        "rrf_w03": 1,
+        "rrf_w05": 1
+      }
+    }
+  ],
+  "answer_questions": [
+    {
+      "id": "Q01",
+      "q": "Apa kepanjangan PMPSTI?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q02",
+      "q": "Berapa IPK minimal untuk yudisium/lulus?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q03",
+      "q": "Berapa skor TOEFL atau AcEPT minimal untuk mendaftar ujian pendadaran?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q04",
+      "q": "Kapan pendaftaran ujian pra pendadaran dan pendadaran dibuka?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q05",
+      "q": "Berapa lama masa studi minimal dan maksimal program magister ini?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q06",
+      "q": "Kapan yudisium dilaksanakan dan kapan batas pendaftarannya?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q10",
+      "q": "Apa pakaian yang harus dipakai saat ujian pra pendadaran dan pendadaran?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q11",
+      "q": "Apa saja konsentrasi di PMPSTI?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q12",
+      "q": "Apa saja mata kuliah wajib konsentrasi HcSE?",
+      "type": "daftar",
+      "found": {
+        "semantic": false,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": false,
+        "hybrid_v2_w05": false,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q13",
+      "q": "Apa saja mata kuliah pilihan untuk konsentrasi Network and Cybersecurity?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q14",
+      "q": "Mata kuliah apa saja yang diambil di semester 1?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q15",
+      "q": "Dokumen apa saja yang harus diunggah untuk mendaftar ujian pendadaran?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": false,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": false,
+        "rrf_w05": false
+      }
+    },
+    {
+      "id": "Q19",
+      "q": "Bagaimana cara mengajukan cuti kuliah dan apa syaratnya?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q20",
+      "q": "Bagaimana alur mengajukan izin tidak mengikuti perkuliahan?",
+      "type": "prosedur",
+      "found": {
+        "semantic": false,
+        "hybrid": false,
+        "rrf": false,
+        "hybrid_v2": false,
+        "hybrid_v2_w05": false,
+        "rrf_w03": false,
+        "rrf_w05": false
+      }
+    },
+    {
+      "id": "Q21",
+      "q": "Bagaimana cara mengganti judul tesis jika pembimbingnya tetap sama?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q22",
+      "q": "Apa saja tahapan setelah sidang pendadaran sampai bisa wisuda?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": false,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": false,
+        "rrf_w05": false
+      }
+    },
+    {
+      "id": "Q23",
+      "q": "Kapan batas akhir unggah ETD dan pendaftaran akun untuk ikut wisuda periode I?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q24",
+      "q": "Apa perbedaan kurikulum berbasis perkuliahan dan berbasis riset?",
+      "type": "perbandingan",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q25",
+      "q": "Apa beda Ujian Pra Tesis dan Ujian Tesis?",
+      "type": "perbandingan",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q26",
+      "q": "Berapa total SKS untuk lulus magister TI?",
+      "type": "konflik_versi",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    },
+    {
+      "id": "Q27",
+      "q": "Berapa SKS bobot tesis?",
+      "type": "konflik_versi",
+      "found": {
+        "semantic": true,
+        "hybrid": true,
+        "rrf": true,
+        "hybrid_v2": true,
+        "hybrid_v2_w05": true,
+        "rrf_w03": true,
+        "rrf_w05": true
+      }
+    }
+  ]
+}

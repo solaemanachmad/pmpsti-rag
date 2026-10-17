@@ -1,0 +1,68 @@
+{
+  "_readme": [
+    "Retrieval test set for eval_retrieval.py.",
+    "q       : the question as a student would ask it",
+    "expect  : document paths that contain the answer; ANY match counts as a hit.",
+    "          Paths are matched against document_id and source_url after normalising",
+    "          (https://.../panduan_pmpsti/ prefix, .html and /index removed), so",
+    "          'chapter2/curricula' matches both the guidebook copy and the URL copy.",
+    "type    : lookup | list | count | procedure | policy",
+    "source  : 'log' = taken from real query_logs, 'drafted' = written to cover a section",
+    "status  : 'review' until a person has confirmed the expected document(s)"
+  ],
+  "questions": [
+    {"id": "coop-count",        "q": "berapa jumlah kerjasama PMPSTI?",                                   "expect": ["appendix/a_cooperation"], "type": "count",     "lang": "id", "source": "log",     "status": "review"},
+    {"id": "coop-list",         "q": "sebutkan semua 13 mitra kerjasama PMPSTI beserta periodanya",       "expect": ["appendix/a_cooperation"], "type": "list",      "lang": "id", "source": "log",     "status": "review"},
+    {"id": "coop-partners",     "q": "siapa saja mitra kerjasama PMPSTI?",                                "expect": ["appendix/a_cooperation"], "type": "list",      "lang": "id", "source": "log",     "status": "review"},
+    {"id": "coop-tunghai",      "q": "Tunghai University kerjasama PMPSTI",                               "expect": ["appendix/a_cooperation"], "type": "lookup",    "lang": "id", "source": "log",     "status": "review"},
+    {"id": "coop-docs-typo",    "q": "berapa jumlah dokumen kerjsamasa?",                                  "expect": ["appendix/a_cooperation"], "type": "count",     "lang": "id", "source": "log",     "status": "review"},
+    {"id": "coop-intl-en",      "q": "Which international partners does PMPSTI collaborate with?",        "expect": ["appendix/a_cooperation"], "type": "list",      "lang": "en", "source": "drafted", "status": "review"},
+
+    {"id": "lect-tumiran-prof", "q": "Bapak Tumiran apakah sudah guru besar?",                             "expect": ["tenaga-pendidik", "appendix/h_kbk"], "type": "lookup", "lang": "id", "source": "log", "status": "review"},
+    {"id": "lect-insap-field",  "q": "Apa bidang keilmuan P. Insap Santosa?",                              "expect": ["tenaga-pendidik"],        "type": "lookup",    "lang": "id", "source": "log",     "status": "review"},
+    {"id": "lect-insap-rank",   "q": "Insap Santosa jabatan fungsional",                                   "expect": ["tenaga-pendidik"],        "type": "lookup",    "lang": "id", "source": "log",     "status": "review"},
+    {"id": "lect-list",         "q": "daftar lengkap dosen PMPSTI nama NIP jabatan fungsional",            "expect": ["tenaga-pendidik", "appendix/c_ewmp"], "type": "list", "lang": "id", "source": "log", "status": "review"},
+    {"id": "lect-who-en",       "q": "Who are the professors teaching in PMPSTI?",                         "expect": ["tenaga-pendidik"],        "type": "list",      "lang": "en", "source": "drafted", "status": "review"},
+
+    {"id": "ewmp-rudy",         "q": "rata-rata ewmp Bapak Rudy Hartanto berapa?",                         "expect": ["appendix/c_ewmp"],        "type": "lookup",    "lang": "id", "source": "log",     "status": "review"},
+    {"id": "ewmp-what",         "q": "Apa itu EWMP dosen?",                                                "expect": ["appendix/c_ewmp"],        "type": "policy",    "lang": "id", "source": "drafted", "status": "review"},
+
+    {"id": "tendik-email",      "q": "Apa email Juni Paryadi?",                                            "expect": ["appendix/d_tendik"],      "type": "lookup",    "lang": "id", "source": "drafted", "status": "review", "note": "d_tendik is not ingested yet — expected to fail in the baseline"},
+    {"id": "tendik-count",      "q": "Berapa jumlah tenaga kependidikan DTETI?",                           "expect": ["appendix/d_tendik"],      "type": "count",     "lang": "id", "source": "drafted", "status": "review", "note": "d_tendik is not ingested yet"},
+
+    {"id": "kbk-groups",        "q": "Apa saja Kelompok Bidang Keahlian (KBK) di PMPSTI?",                 "expect": ["appendix/h_kbk"],         "type": "list",      "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "org-kaprodi",       "q": "Siapa ketua program studi PMPSTI?",                                  "expect": ["appendix/f_org"],         "type": "lookup",    "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "editors",           "q": "Siapa tim penyusun buku panduan akademik PMPSTI?",                   "expect": ["front/a_editor"],         "type": "list",      "lang": "id", "source": "drafted", "status": "review"},
+
+    {"id": "curr-structure",    "q": "Struktur Kurikulum PMPSTI Berbasis Perkuliahan",                     "expect": ["chapter2/curricula"],     "type": "list",      "lang": "id", "source": "log",     "status": "review"},
+    {"id": "curr-profile",      "q": "Apa profil lulusan PMPSTI?",                                         "expect": ["chapter2/curricula"],     "type": "list",      "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "curr-credits",      "q": "Berapa SKS yang harus ditempuh untuk lulus magister PMPSTI?",        "expect": ["chapter2/curricula"],     "type": "count",     "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "curr-cpl",          "q": "Apa saja capaian pembelajaran lulusan (CPL) PMPSTI?",                "expect": ["chapter2/curricula"],     "type": "list",      "lang": "id", "source": "log",     "status": "review", "note": "log had 'CPL3?', 'CPL4?', 'CPL9?' — rephrased as one list question"},
+    {"id": "curr-credits-en",   "q": "How many credits do I need to graduate?",                            "expect": ["chapter2/curricula"],     "type": "count",     "lang": "en", "source": "drafted", "status": "review"},
+
+    {"id": "intro-identity",    "q": "Kapan program studi PMPSTI didirikan?",                              "expect": ["chapter1/introduction"],  "type": "lookup",    "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "intro-accred",      "q": "Apa akreditasi program studi PMPSTI?",                               "expect": ["chapter1/introduction"],  "type": "lookup",    "lang": "id", "source": "drafted", "status": "review"},
+
+    {"id": "thesis-supervisor", "q": "Bagaimana ketentuan dosen pembimbing tesis?",                        "expect": ["chapter4/thesis"],        "type": "policy",    "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "thesis-exam",       "q": "Bagaimana alur ujian tesis?",                                         "expect": ["chapter4/thesis", "chapter2/curricula"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review", "note": "exam rules also appear in chapter2/curricula"},
+
+    {"id": "sop-after-defense", "q": "Apa yang harus dilakukan setelah sidang pendadaran?",                 "expect": ["chapter6/sop"],           "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "sop-graduation",    "q": "Bagaimana cara mendaftar wisuda?",                                   "expect": ["chapter6/sop"],           "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "sop-library",       "q": "Bagaimana bebas pustaka dan unggah mandiri di Simaster?",            "expect": ["chapter6/sop"],           "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+
+    {"id": "c7-services",       "q": "Layanan persuratan akademik apa saja yang tersedia?",                "expect": ["chapter7/services"],      "type": "list",      "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-leave",          "q": "izin cuti kuliah?",                                                  "expect": ["chapter7/correspondence/gap"], "type": "procedure", "lang": "id", "source": "log", "status": "review"},
+    {"id": "c7-leave-en",       "q": "How do I apply for academic leave?",                                 "expect": ["chapter7/correspondence/gap"], "type": "procedure", "lang": "en", "source": "drafted", "status": "review"},
+    {"id": "c7-absence",        "q": "Bagaimana mengajukan izin tidak mengikuti perkuliahan?",             "expect": ["chapter7/correspondence/absence"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-attendance",     "q": "Bagaimana cara klaim presensi?",                                     "expect": ["chapter7/correspondence/attendance"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-makeup",         "q": "Bagaimana prosedur pengajuan ujian susulan?",                        "expect": ["chapter7/correspondence/makeup_exam"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-skl",            "q": "Bagaimana mendapatkan surat keterangan lulus?",                      "expect": ["chapter7/correspondence/completion_letter"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-judicium",       "q": "Bagaimana mengajukan surat keterangan yudisium?",                    "expect": ["chapter7/correspondence/judicium_letter"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-graddoc",        "q": "Bagaimana pengambilan dokumen wisuda?",                              "expect": ["chapter7/correspondence/graduation_doc"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-ethics",         "q": "Bagaimana mengajukan surat pengantar ethical clearance?",            "expect": ["chapter7/correspondence/ethic_clearance"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-skpi",           "q": "Bagaimana mengajukan aktivitas dan prestasi untuk SKPI?",            "expect": ["chapter7/correspondence/skpi"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-extend",         "q": "Bagaimana perpanjangan tugas belajar?",                              "expect": ["chapter7/correspondence/study_extend"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-title-change",   "q": "Bagaimana prosedur perubahan judul tesis?",                          "expect": ["chapter7/correspondence/thesis_amanment"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"},
+    {"id": "c7-reference",      "q": "Bagaimana meminta surat rekomendasi atau reference letter?",         "expect": ["chapter7/correspondence/recomendation_letter"], "type": "procedure", "lang": "id", "source": "drafted", "status": "review"}
+  ]
+}
