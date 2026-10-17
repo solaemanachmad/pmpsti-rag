@@ -1,0 +1,368 @@
+//! Reading web pages for URL ingest: visible text, tables, and table-aware chunks.
+//!
+//! A page is turned into `PageContent` — its title, its main text and its tables kept
+//! separately — so tables can be chunked row by row with their column names instead of
+//! being flattened into anonymous `a | b | c` lines.
+
+use scraper::{ElementRef, Html, Node, Selector};
+use serde_json::Value;
+
+/// A table found on a page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageTable {
+    pub caption: String,
+    /// Column names; empty when the table has no header row.
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+/// What `extract_page` reads from a page.
+#[derive(Debug, Clone, Default)]
+pub struct PageContent {
+    pub title: String,
+    /// Main text without tables, one paragraph or line per line.
+    pub text: String,
+    pub tables: Vec<PageTable>,
+}
+
+/// Elements whose text is never part of the main text: page chrome, code, and tables
+/// (tables are read separately by `json_tables` / `html_tables`).
+const SKIP_TEXT_IN: &[&str] = &[
+    "script", "style", "noscript", "template", "nav", "header", "footer", "aside", "button", "table",
+];
+
+fn collapse(s: &str) -> String {
+    s.replace('\u{a0}', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Plain text of an HTML fragment: tags removed, entities decoded, whitespace collapsed.
+pub fn html_to_text(fragment: &str) -> String {
+    let doc = Html::parse_fragment(fragment);
+    collapse(&doc.root_element().text().collect::<Vec<_>>().join(" "))
+}
+
+/// Visible text of `root`, skipping `SKIP_TEXT_IN` elements. Non-breaking spaces become
+/// normal spaces (so "Tabel&nbsp;D.1" matches "Tabel D.1"); blank lines are dropped.
+pub fn visible_text(root: ElementRef) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for node in root.descendants() {
+        let Node::Text(text) = node.value() else { continue };
+        let hidden = node.ancestors()
+            .filter_map(ElementRef::wrap)
+            .any(|el| SKIP_TEXT_IN.contains(&el.value().name()));
+        if !hidden {
+            parts.push(text.to_string());
+        }
+    }
+    parts.join("\n")
+        .replace('\u{a0}', " ")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn cell_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => html_to_text(s),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Tables stored as JSON in `<script type="application/json">`, in either format:
+/// - R/Quarto htmlwidgets (DT): `{"x": {"data": [[column], …], "container": "<table>…<th>…",
+///   "caption": "…"}}` — data is **column by column**, headers live in the container HTML.
+///   This holds every row, including those hidden behind the widget's pagination.
+/// - DataTables style: `{"data": [[row], …], "columns": [{"title": …}, …]}` — row by row.
+pub fn json_tables(document: &Html) -> Vec<PageTable> {
+    let sel = Selector::parse("script[type='application/json']").unwrap();
+    document.select(&sel)
+        .filter_map(|script| serde_json::from_str::<Value>(&script.text().collect::<String>()).ok())
+        .filter_map(|v| htmlwidget_table(&v).or_else(|| datatables_table(&v)))
+        .collect()
+}
+
+fn htmlwidget_table(v: &Value) -> Option<PageTable> {
+    let x = v.get("x")?;
+    let columns: Vec<&Vec<Value>> = x.get("data")?.as_array()?.iter().filter_map(Value::as_array).collect();
+    let n_rows = columns.iter().map(|c| c.len()).max().filter(|&n| n > 0)?;
+    let rows = (0..n_rows)
+        .map(|r| columns.iter().map(|c| c.get(r).map(cell_text).unwrap_or_default()).collect())
+        .collect();
+    let headers = x.get("container").and_then(Value::as_str)
+        .map(|html| {
+            let th = Selector::parse("th").unwrap();
+            Html::parse_fragment(html).select(&th).map(|e| collapse(&e.text().collect::<String>())).collect()
+        })
+        .unwrap_or_default();
+    let caption = x.get("caption").and_then(Value::as_str).map(html_to_text).unwrap_or_default();
+    Some(PageTable { caption, headers, rows })
+}
+
+fn datatables_table(v: &Value) -> Option<PageTable> {
+    let rows: Vec<Vec<String>> = v.get("data")?.as_array()?.iter()
+        .filter_map(Value::as_array)
+        .map(|cells| cells.iter().map(cell_text).collect())
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let headers = v.get("columns").and_then(Value::as_array)
+        .map(|cols| cols.iter()
+            .filter_map(|c| c.get("title").or_else(|| c.get("data")).and_then(Value::as_str).map(html_to_text))
+            .collect())
+        .unwrap_or_default();
+    Some(PageTable { caption: String::new(), headers, rows })
+}
+
+/// True when `el` sits inside a JSON-backed widget: the visible table there is only the
+/// current page of rows, so the full data is taken from the JSON instead.
+fn inside_widget(el: ElementRef) -> bool {
+    el.ancestors().filter_map(ElementRef::wrap).any(|a| {
+        let v = a.value();
+        v.classes().any(|c| c == "html-widget" || c == "datatables")
+            || v.id().is_some_and(|id| id.starts_with("htmlwidget"))
+    })
+}
+
+/// HTML `<table>`s inside `root` (not inside JSON widgets or other tables).
+/// A first row of only `<th>` cells becomes the header.
+pub fn html_tables(root: ElementRef) -> Vec<PageTable> {
+    let table_sel = Selector::parse("table").unwrap();
+    let tr_sel = Selector::parse("tr").unwrap();
+    let th_sel = Selector::parse("th").unwrap();
+    let td_sel = Selector::parse("td").unwrap();
+    let cell_sel = Selector::parse("th, td").unwrap();
+    let caption_sel = Selector::parse("caption").unwrap();
+    let text = |e: ElementRef| collapse(&e.text().collect::<Vec<_>>().join(" "));
+
+    let mut tables = Vec::new();
+    for table in root.select(&table_sel) {
+        let nested = table.ancestors().filter_map(ElementRef::wrap).any(|a| a.value().name() == "table");
+        if nested || inside_widget(table) {
+            continue;
+        }
+        let mut headers: Vec<String> = Vec::new();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for tr in table.select(&tr_sel) {
+            let only_th = tr.select(&td_sel).next().is_none();
+            if only_th && headers.is_empty() && rows.is_empty() {
+                headers = tr.select(&th_sel).map(text).collect();
+                continue;
+            }
+            let cells: Vec<String> = tr.select(&cell_sel).map(text).collect();
+            if cells.iter().any(|c| !c.is_empty()) {
+                rows.push(cells);
+            }
+        }
+        if !rows.is_empty() {
+            let caption = table.select(&caption_sel).next().map(text).unwrap_or_default();
+            tables.push(PageTable { caption, headers, rows });
+        }
+    }
+    tables
+}
+
+/// One row as text. With matching headers every value keeps its column name
+/// (`Nama: Juni Paryadi | NIP: 1967… | Email: …`); a running-number column is dropped.
+fn row_line(headers: &[String], row: &[String]) -> String {
+    if !headers.is_empty() && headers.len() == row.len() {
+        headers.iter().zip(row)
+            .filter(|(h, v)| !v.is_empty() && !matches!(h.to_lowercase().as_str(), "no" | "no." | "#"))
+            .map(|(h, v)| if h.is_empty() { v.clone() } else { format!("{h}: {v}") })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    } else {
+        row.iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>().join(" | ")
+    }
+}
+
+/// The column that names each row: a header containing "nama"/"name", otherwise the
+/// column with the longest non-numeric values.
+fn key_column(table: &PageTable) -> Option<usize> {
+    if let Some(i) = table.headers.iter().position(|h| {
+        let h = h.to_lowercase();
+        h.contains("nama") || h.contains("name")
+    }) {
+        return Some(i);
+    }
+    let width = table.rows.iter().map(Vec::len).max()?;
+    (0..width)
+        .map(|c| {
+            let vals: Vec<&String> = table.rows.iter().filter_map(|r| r.get(c)).filter(|v| !v.is_empty()).collect();
+            let numeric = vals.iter().filter(|v| v.parse::<f64>().is_ok()).count();
+            let avg = vals.iter().map(|v| v.len()).sum::<usize>() / vals.len().max(1);
+            (c, if numeric * 2 > vals.len() { 0 } else { avg })
+        })
+        .max_by_key(|&(_, score)| score)
+        .filter(|&(_, score)| score > 0)
+        .map(|(c, _)| c)
+}
+
+/// Longest summary chunk; lists longer than this are cut (the total count stays exact).
+const MAX_SUMMARY_CHARS: usize = 4_000;
+
+/// Chunks for one table, ready to embed:
+/// 1. a summary chunk with the total number of rows and every row's name — so
+///    "berapa jumlah …?" / "daftar lengkap …" can be answered from a single chunk;
+/// 2. the rows (`row_line`) grouped up to `max_chars`, each chunk starting with the page
+///    title, caption and row range, so a chunk is understandable on its own.
+///
+/// The generated words ("Jumlah data", "baris") are Indonesian on purpose: the corpus and
+/// the students' questions are Indonesian, and these words must match their questions.
+pub fn table_chunks(page_title: &str, table: &PageTable, max_chars: usize) -> Vec<String> {
+    let lines: Vec<String> = table.rows.iter()
+        .map(|r| row_line(&table.headers, r))
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return vec![];
+    }
+    let total = lines.len();
+    let label = if table.caption.is_empty() { page_title.to_string() } else { format!("{page_title} — {}", table.caption) };
+
+    let mut chunks = vec![summary_chunk(&label, table, total)];
+    let mut start = 0;
+    while start < total {
+        let mut end = start;
+        let mut size = 0;
+        while end < total && (end == start || size + lines[end].len() + 1 <= max_chars) {
+            size += lines[end].len() + 1;
+            end += 1;
+        }
+        chunks.push(format!("{label} (baris {}–{end} dari {total})\n{}", start + 1, lines[start..end].join("\n")));
+        start = end;
+    }
+    chunks
+}
+
+fn summary_chunk(label: &str, table: &PageTable, total: usize) -> String {
+    let mut text = format!("{label}\nJumlah data: {total}.");
+    let named: Vec<&String> = table.headers.iter().filter(|h| !h.is_empty()).collect();
+    if !named.is_empty() {
+        text.push_str(&format!("\nKolom: {}.", named.iter().map(|h| h.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+    if let Some(col) = key_column(table) {
+        let title = table.headers.get(col).filter(|h| !h.is_empty()).map(String::as_str).unwrap_or("Daftar");
+        // Keep only the name part of long cells, e.g. "Prof. … IPU. (Guru Besar) Bidang …"
+        let names: Vec<String> = table.rows.iter()
+            .filter_map(|r| r.get(col))
+            .map(|v| v.split(" (").next().unwrap_or(v).trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect();
+        let mut list = String::new();
+        for (i, name) in names.iter().enumerate() {
+            let piece = if i == 0 { name.clone() } else { format!("; {name}") };
+            if text.len() + title.len() + list.len() + piece.len() + 8 > MAX_SUMMARY_CHARS {
+                list.push_str("; …");
+                break;
+            }
+            list.push_str(&piece);
+        }
+        text.push_str(&format!("\n{title}: {list}."));
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const D_TENDIK: &str = include_str!("../tests/fixtures/d_tendik.html");
+    const C_EWMP: &str = include_str!("../tests/fixtures/c_ewmp.html");
+    const TENAGA_PENDIDIK: &str = include_str!("../tests/fixtures/tenaga_pendidik.html");
+
+    #[test]
+    fn reads_all_rows_from_column_major_widget_json() {
+        let tables = json_tables(&Html::parse_document(D_TENDIK));
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+        assert_eq!(t.headers, ["No", "Nama", "NIP", "Email"]);
+        assert_eq!(t.rows.len(), 40, "all 40 staff, not just the first page of 10");
+        assert_eq!(t.rows[0], ["1", "Juni Paryadi", "196710301987031001", "juni@ugm.ac.id"]);
+    }
+
+    #[test]
+    fn reads_widget_caption_and_numbers() {
+        let t = &json_tables(&Html::parse_document(C_EWMP))[0];
+        assert!(t.caption.contains("EWMP"), "caption: {}", t.caption);
+        assert_eq!(t.headers.len(), 10);
+        assert_eq!(t.rows.len(), 28);
+    }
+
+    #[test]
+    fn rows_keep_their_column_names() {
+        let t = &json_tables(&Html::parse_document(D_TENDIK))[0];
+        assert_eq!(row_line(&t.headers, &t.rows[0]), "Nama: Juni Paryadi | NIP: 196710301987031001 | Email: juni@ugm.ac.id");
+    }
+
+    #[test]
+    fn table_chunks_have_summary_and_context() {
+        let t = &json_tables(&Html::parse_document(D_TENDIK))[0];
+        let chunks = table_chunks("Lampiran D — Daftar Tenaga Kependidikan", t, 1200);
+        let summary = &chunks[0];
+        assert!(summary.contains("Jumlah data: 40."));
+        assert!(summary.contains("Juni Paryadi") && summary.contains("Murtija"));
+        for c in &chunks[1..] {
+            assert!(c.starts_with("Lampiran D — Daftar Tenaga Kependidikan (baris "), "missing context: {}", &c[..60]);
+            assert!(c.len() <= 1200 + 120, "chunk too long: {}", c.len());
+        }
+        let all = chunks[1..].join("\n");
+        assert_eq!(all.matches("Nama: ").count(), 40, "every row in exactly one chunk");
+    }
+
+    #[test]
+    fn html_table_without_header_is_read_and_summarised() {
+        let doc = Html::parse_document(TENAGA_PENDIDIK);
+        let root = doc.select(&Selector::parse("article .post-content").unwrap()).next().unwrap();
+        let tables = html_tables(root);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].rows.len(), 60);
+        let summary = &table_chunks("Tenaga Pendidik", &tables[0], 1200)[0];
+        assert!(summary.contains("Jumlah data: 60."));
+        assert!(summary.contains("Prof. Ir. P. Insap Santosa, M.Sc., Ph.D., IPU."), "{}", &summary[..200]);
+    }
+
+    #[test]
+    fn visible_text_skips_scripts_and_tables() {
+        let doc = Html::parse_document(
+            "<body><main><p>Hello&nbsp;world</p><script>var x = 1;</script>\
+             <table><tr><td>cell</td></tr></table><nav>menu</nav></main></body>",
+        );
+        let main = doc.select(&Selector::parse("main").unwrap()).next().unwrap();
+        assert_eq!(visible_text(main), "Hello world");
+    }
+}
+
+/// Prints what a saved page turns into — run with:
+/// `cargo test --release show_page_chunks -- --ignored --nocapture`
+#[cfg(test)]
+mod show {
+    use super::*;
+
+    #[test]
+    #[ignore = "prints example output; run explicitly"]
+    fn show_page_chunks() {
+        for (name, html, content) in [
+            ("d_tendik", include_str!("../tests/fixtures/d_tendik.html"), "main#quarto-document-content"),
+            ("c_ewmp", include_str!("../tests/fixtures/c_ewmp.html"), "main#quarto-document-content"),
+            ("tenaga_pendidik", include_str!("../tests/fixtures/tenaga_pendidik.html"), "article .post-content"),
+        ] {
+            let doc = Html::parse_document(html);
+            let root = doc.select(&Selector::parse(content).unwrap()).next().unwrap();
+            let mut tables = json_tables(&doc);
+            tables.extend(html_tables(root));
+            println!("\n================ {name}: {} table(s) ================", tables.len());
+            for t in &tables {
+                let chunks = table_chunks(name, t, 1200);
+                println!("rows {} | headers {:?} | {} chunks", t.rows.len(), t.headers, chunks.len());
+                for (i, c) in chunks.iter().take(2).enumerate() {
+                    println!("--- chunk {i} ({} chars)\n{}", c.len(), c.chars().take(420).collect::<String>());
+                }
+            }
+        }
+    }
+}

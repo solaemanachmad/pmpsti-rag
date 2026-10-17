@@ -19,6 +19,9 @@ use crate::rag::RagEngine;
 /// Query pencarian memakai "RETRIEVAL_QUERY" (lihat search.rs).
 /// Retries up to 3 times on 429/503 (rate-limit / overload).
 /// Returns the 768-dim embedding or an error string.
+const EMBED_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent";
+
 async fn embed_with_retry(
     http:       &reqwest::Client,
     embed_url:  &str,
@@ -1741,9 +1744,13 @@ async fn fetch_html_with_js(url: &str) -> Result<String, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let html = http.get(url).send().await
-        .map_err(|e| format!("Gagal fetch URL: {e}"))?
-        .text().await
+    let resp = http.get(url).send().await
+        .map_err(|e| format!("Gagal fetch URL: {e}"))?;
+    // Refuse error pages: otherwise a "404 File not found" page is ingested as a document.
+    if !resp.status().is_success() {
+        return Err(format!("URL returned HTTP {} — page not ingested", resp.status().as_u16()));
+    }
+    let html = resp.text().await
         .map_err(|e| format!("Gagal baca konten: {e}"))?;
 
     // 2. Deteksi apakah halaman perlu JS render:
@@ -1820,6 +1827,171 @@ const {{ chromium }} = require('playwright');
     }
 }
 
+/// Where the main content usually lives, most specific first. Tried in this order.
+const CONTENT_SELECTORS: &[&str] = &[
+    "main#quarto-document-content", // Quarto sites (the PMPSTI guidebook)
+    "article .post-content",        // DTETI WordPress theme
+    ".entry-content",               // most other WordPress themes
+    "main",
+    "article",
+    "#content",
+    ".content",
+    "body",
+];
+
+/// Turn downloaded HTML into title, main text and tables (stages 2–3 of URL ingest).
+/// Pure function — no network — so it can be tested on saved pages in tests/fixtures/.
+fn extract_page(html: &str, url: &str, title_override: Option<String>) -> crate::reader::PageContent {
+    use crate::reader;
+    let document = scraper::Html::parse_document(html);
+
+    // Title: the one given by the admin, else <title>, else the URL
+    let page_title = scraper::Selector::parse("title").ok()
+        .and_then(|sel| document.select(&sel).next())
+        .map(|e| e.text().collect::<String>().trim().to_string())
+        .unwrap_or_default();
+    let title = title_override
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| if page_title.is_empty() { url.to_string() } else { page_title });
+
+    // Take the first content area that exists, in OUR priority order. A single
+    // "main, article, …, body" selector would return the first match in page order,
+    // and <body> always comes first — so menus, sidebars and footers leaked in.
+    let root = CONTENT_SELECTORS.iter()
+        .filter_map(|css| scraper::Selector::parse(css).ok())
+        .find_map(|sel| document.select(&sel).next())
+        .unwrap_or_else(|| document.root_element());
+
+    // Tables: JSON widgets anywhere on the page (they hold every row) + HTML tables in the content
+    let mut tables = reader::json_tables(&document);
+    tables.extend(reader::html_tables(root));
+
+    reader::PageContent { title, text: reader::visible_text(root), tables }
+}
+
+/// Fetch a URL and turn it into a title and plain text (stages 1–3 of URL ingest).
+/// Downloading happens here; the parsing lives in `extract_page`.
+/// Shared by `admin_ingest_url` and `admin_preview_url`, so a preview shows exactly
+/// what would be saved. Errors are returned as ready-made HTTP responses.
+async fn read_url(url: &str, title_override: Option<String>) -> Result<crate::reader::PageContent, HttpResponse> {
+    let url = url.trim().to_string();
+    if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
+        return Err(HttpResponse::BadRequest().json(ApiError::new(400, "URL tidak valid")));
+    }
+
+    // 1. Fetch HTML (falls back to headless Chromium for JS-heavy pages)
+    let html = match fetch_html_with_js(&url).await {
+        Ok(h) => h,
+        Err(e) => return Err(HttpResponse::BadGateway().json(ApiError::new(502, e))),
+    };
+
+    let page = extract_page(&html, &url, title_override);
+
+    if page.text.len() < 50 && page.tables.is_empty() {
+        return Err(HttpResponse::UnprocessableEntity()
+            .json(ApiError::new(422, "Konten terlalu pendek atau tidak bisa di-parse")));
+    }
+
+    Ok(page)
+}
+
+/// All chunks for a page: its text chunked with the requested strategy, then every table
+/// chunked by `reader::table_chunks` (summary + rows with column names).
+async fn page_chunks(
+    page:       &crate::reader::PageContent,
+    strategy:   &crate::models::ChunkStrategy,
+    http:       &reqwest::Client,
+    gemini_key: &str,
+) -> Result<(crate::models::ChunkStrategy, Vec<String>), HttpResponse> {
+    let (used, mut chunks) = if page.text.len() >= 50 {
+        chunk_text(&page.text, strategy, http, gemini_key).await?
+    } else {
+        (strategy.clone(), Vec::new())
+    };
+    for table in &page.tables {
+        chunks.extend(crate::reader::table_chunks(&page.title, table, chunk_max_chars()));
+    }
+    Ok((used, chunks))
+}
+
+/// Split text into chunks (stage 4), resolving `auto` to a concrete strategy first.
+/// Returns the strategy actually used. Only `semantic` calls Gemini (one call per sentence).
+async fn chunk_text(
+    raw_text:   &str,
+    strategy:   &crate::models::ChunkStrategy,
+    http:       &reqwest::Client,
+    gemini_key: &str,
+) -> Result<(crate::models::ChunkStrategy, Vec<String>), HttpResponse> {
+    // Strategy from the request (default: auto-detect)
+    let min_chars = chunk_min_chars();
+    let max_chars = chunk_max_chars();
+    // Resolve Auto → detect from the content
+    let resolved_strategy = if *strategy == crate::models::ChunkStrategy::Auto {
+        crate::models::ChunkStrategy::detect(raw_text)
+    } else {
+        strategy.clone()
+    };
+
+    let chunks_text: Vec<String> = match &resolved_strategy {
+        crate::models::ChunkStrategy::Semantic | crate::models::ChunkStrategy::Auto => {
+            match semantic_chunk(&http, EMBED_URL, &gemini_key, raw_text,
+                chunk_similarity_threshold(), min_chars, max_chars).await {
+                Ok(c)  => c,
+                Err(e) => return Err(HttpResponse::BadGateway()
+                    .json(ApiError::new(502, format!("Semantic chunk error: {e}")))),
+            }
+        }
+        crate::models::ChunkStrategy::Sentence   => sentence_chunk(raw_text, min_chars, max_chars),
+        crate::models::ChunkStrategy::Structural => structural_chunk(raw_text, min_chars, max_chars),
+        crate::models::ChunkStrategy::Fixed      => fixed_chunk(raw_text, max_chars),
+    };
+
+    Ok((resolved_strategy, chunks_text))
+}
+
+/// Preview a URL ingest: read and chunk the page exactly like `admin_ingest_url`,
+/// but embed and save nothing. Lets an admin (or a developer) check the extraction first.
+pub async fn admin_preview_url(
+    req:   HttpRequest,
+    state: web::Data<AppState>,
+    body:  web::Json<IngestUrlRequest>,
+) -> HttpResponse {
+    let claims = match require_auth(&req, &state.jwt_secret) { Ok(c) => c, Err(r) => return r };
+    if claims.role != "admin" {
+        return HttpResponse::Forbidden().json(ApiError::new(403, "Hanya admin"));
+    }
+
+    let page = match read_url(&body.url, body.title.clone()).await {
+        Ok(page) => page,
+        Err(resp) => return resp,
+    };
+    let http = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; PMPSTI-Bot/1.0)")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+    // Only the semantic strategy needs Gemini here; the others work without a key.
+    let gemini_key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
+    let (strategy, chunks) = match page_chunks(&page, &body.chunk_strategy, &http, &gemini_key).await {
+        Ok(result) => result,
+        Err(resp) => return resp,
+    };
+
+    HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({
+        "url":         body.url.trim(),
+        "title":       page.title,
+        "strategy":    format!("{strategy:?}").to_lowercase(),
+        "text_chars":  page.text.chars().count(),
+        "tables":      page.tables.iter().map(|t| serde_json::json!({
+            "caption": t.caption, "headers": t.headers, "rows": t.rows.len(),
+        })).collect::<Vec<_>>(),
+        "chunk_count": chunks.len(),
+        "chunks":      chunks.iter().enumerate().map(|(i, c)| serde_json::json!({
+            "index": i, "chars": c.chars().count(), "text": c,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
 pub async fn admin_ingest_url(
     req:   HttpRequest,
     state: web::Data<AppState>,
@@ -1831,218 +2003,29 @@ pub async fn admin_ingest_url(
         return HttpResponse::Forbidden().json(ApiError::new(403, "Hanya admin"));
     }
 
-    let url = body.url.trim().to_string();
-    if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
-        return HttpResponse::BadRequest().json(ApiError::new(400, "URL tidak valid"));
-    }
-
-    // 1. Fetch HTML (otomatis fallback ke Chromium headless jika halaman JS-heavy)
-    let html = match fetch_html_with_js(&url).await {
-        Ok(h) => h,
-        Err(e) => return HttpResponse::BadGateway().json(ApiError::new(502, e)),
+    let page = match read_url(&body.url, body.title.clone()).await {
+        Ok(page) => page,
+        Err(resp) => return resp,
     };
+    let title = page.title.clone();
+    let url = body.url.trim().to_string();
 
-    // Buat http client untuk embed (dipakai di langkah 4)
     let http = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (compatible; PMPSTI-Bot/1.0)")
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap();
 
-    // 2. Parse HTML → teks bersih
-    let document = scraper::Html::parse_document(&html);
-
-    // Ambil judul dari <title> jika tidak disuplai
-    let page_title = {
-        let sel = scraper::Selector::parse("title").unwrap();
-        document.select(&sel).next()
-            .map(|e| e.text().collect::<String>().trim().to_string())
-            .unwrap_or_default()
-    };
-    let title = body.title.clone()
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| if page_title.is_empty() { url.clone() } else { page_title });
-
-    // Hapus tag script, style, nav, footer, header
-    let remove_sel   = scraper::Selector::parse("script,style,nav,footer,header,aside,noscript").unwrap();
-    let body_sel     = scraper::Selector::parse("main, article, .content, #content, .entry-content, body").unwrap();
-    let json_sel     = scraper::Selector::parse("script[type='application/json']").unwrap();
-    let table_sel    = scraper::Selector::parse("table").unwrap();
-    let tr_sel       = scraper::Selector::parse("tr").unwrap();
-    let td_sel       = scraper::Selector::parse("td, th").unwrap();
-
-    // Ekstrak DataTables JSON widget — biasanya <script type="application/json"> berisi
-    // {"data": [[col1, col2, ...], ...]} atau {"columns": [...], "rows": [...]}
-    let datatables_text: String = {
-        let mut out = Vec::new();
-        for script_el in document.select(&json_sel) {
-            let raw = script_el.text().collect::<String>();
-            // Coba parse sebagai JSON
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-                // Format: {"data": [[...], ...]}
-                if let Some(rows) = v.get("data").and_then(|d| d.as_array()) {
-                    // Ambil kolom dari "columns" jika ada
-                    let headers: Vec<String> = v.get("columns")
-                        .and_then(|c| c.as_array())
-                        .map(|cols| cols.iter().filter_map(|c| {
-                            c.get("title").or(c.get("data"))
-                                .and_then(|t| t.as_str())
-                                .map(|s| s.to_string())
-                        }).collect())
-                        .unwrap_or_default();
-
-                    for row in rows {
-                        if let Some(cells) = row.as_array() {
-                            let row_text: Vec<String> = cells.iter()
-                                .map(|c| match c {
-                                    serde_json::Value::String(s) => {
-                                        // Strip HTML tags dari cell value
-                                        let doc2 = scraper::Html::parse_fragment(s);
-                                        doc2.root_element().text().collect::<String>().trim().to_string()
-                                    }
-                                    serde_json::Value::Number(n) => n.to_string(),
-                                    serde_json::Value::Bool(b) => b.to_string(),
-                                    _ => String::new(),
-                                })
-                                .filter(|s| !s.is_empty())
-                                .collect();
-
-                            if !row_text.is_empty() {
-                                if !headers.is_empty() && headers.len() == row_text.len() {
-                                    // "Nama: Prof. Ir. P. Insap Santosa | NIP: 196101081985031002 | ..."
-                                    let paired: Vec<String> = headers.iter().zip(row_text.iter())
-                                        .filter(|(_, v)| !v.is_empty())
-                                        .map(|(h, v)| format!("{}: {}", h, v))
-                                        .collect();
-                                    out.push(paired.join(" | "));
-                                } else {
-                                    out.push(row_text.join(" | "));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out.join("\n")
-    };
-
-    // Ekstrak tabel HTML biasa (<table><tr><td>)
-    let html_table_text: String = {
-        let mut out = Vec::new();
-        for table_el in document.select(&table_sel) {
-            for tr_el in table_el.select(&tr_sel) {
-                let cells: Vec<String> = tr_el.select(&td_sel)
-                    .map(|td| td.text().collect::<String>().trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !cells.is_empty() {
-                    out.push(cells.join(" | "));
-                }
-            }
-        }
-        out.join("\n")
-    };
-
-    let raw_text: String = {
-        // Hapus tag noise (nav/header/footer/script/style) dari HTML mentah
-        // lalu re-parse untuk ekstraksi teks yang bersih.
-        // scraper tidak bisa :not() pada subtree, jadi strip via string manipulation.
-        let cleaned_html = {
-            // Hapus seluruh blok <nav>...</nav>, <header>...</header>, dll dengan regex sederhana
-            let mut h = html.clone();
-            for tag in &["nav", "header", "footer", "aside", "noscript"] {
-                // Hapus tag beserta isinya (greedy, case-insensitive)
-                let open  = format!("<{}", tag);
-                let close = format!("</{}>", tag);
-                while let Some(start) = h.to_lowercase().find(&open) {
-                    if let Some(end_rel) = h.to_lowercase()[start..].find(&close) {
-                        let end = start + end_rel + close.len();
-                        h.replace_range(start..end, "");
-                    } else {
-                        break;
-                    }
-                }
-            }
-            // Hapus semua <script> dan <style>
-            for tag in &["script", "style"] {
-                let open  = format!("<{}", tag);
-                let close = format!("</{}>", tag);
-                while let Some(start) = h.to_lowercase().find(&open) {
-                    if let Some(end_rel) = h.to_lowercase()[start..].find(&close) {
-                        let end = start + end_rel + close.len();
-                        h.replace_range(start..end, "");
-                    } else {
-                        break;
-                    }
-                }
-            }
-            h
-        };
-
-        let doc2 = scraper::Html::parse_document(&cleaned_html);
-        let root = doc2.select(&body_sel).next().map(|e| {
-            e.text().collect::<Vec<_>>().join("\n")
-        }).unwrap_or_else(|| {
-            doc2.root_element().text().collect::<Vec<_>>().join("\n")
-        });
-
-        // Gabungkan teks utama + DataTables JSON + tabel HTML
-        let mut combined = root;
-        if !html_table_text.is_empty() {
-            combined.push('\n');
-            combined.push_str(&html_table_text);
-        }
-        if !datatables_text.is_empty() {
-            combined.push('\n');
-            combined.push_str(&datatables_text);
-        }
-
-        // Bersihkan: collapse multiple blank lines, trim tiap baris
-        combined
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let _ = remove_sel; // selector dideklarasikan untuk dokumentasi, stripping dilakukan manual di atas
-
-    if raw_text.len() < 50 {
-        return HttpResponse::UnprocessableEntity()
-            .json(ApiError::new(422, "Konten terlalu pendek atau tidak bisa di-parse"));
-    }
-
-    // 3. Gemini key (selalu diperlukan untuk embed chunk, meskipun chunking tidak semantic)
+    // 3. Gemini key (always needed to embed chunks, even when chunking isn't semantic)
     let gemini_key = match std::env::var("GEMINI_API_KEY") {
         Ok(k) if !k.is_empty() => k,
         _ => return HttpResponse::InternalServerError()
             .json(ApiError::new(500, "GEMINI_API_KEY tidak dikonfigurasi")),
     };
-    let embed_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent";
 
-    // Chunking — strategy dipilih dari request body (default: auto-detect)
-    let min_chars = chunk_min_chars();
-    let max_chars = chunk_max_chars();
-    // Resolve Auto → deteksi berdasarkan konten
-    let resolved_strategy = if body.chunk_strategy == crate::models::ChunkStrategy::Auto {
-        crate::models::ChunkStrategy::detect(&raw_text)
-    } else {
-        body.chunk_strategy.clone()
-    };
-
-    let chunks_text: Vec<String> = match &resolved_strategy {
-        crate::models::ChunkStrategy::Semantic | crate::models::ChunkStrategy::Auto => {
-            match semantic_chunk(&http, embed_url, &gemini_key, &raw_text,
-                chunk_similarity_threshold(), min_chars, max_chars).await {
-                Ok(c)  => c,
-                Err(e) => return HttpResponse::BadGateway()
-                    .json(ApiError::new(502, format!("Semantic chunk error: {e}"))),
-            }
-        }
-        crate::models::ChunkStrategy::Sentence   => sentence_chunk(&raw_text, min_chars, max_chars),
-        crate::models::ChunkStrategy::Structural => structural_chunk(&raw_text, min_chars, max_chars),
-        crate::models::ChunkStrategy::Fixed      => fixed_chunk(&raw_text, max_chars),
+    let (_, chunks_text) = match page_chunks(&page, &body.chunk_strategy, &http, &gemini_key).await {
+        Ok(result) => result,
+        Err(resp) => return resp,
     };
 
     let category    = body.category.clone().unwrap_or_else(|| "Umum".to_string());
@@ -2052,7 +2035,7 @@ pub async fn admin_ingest_url(
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
     for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, embed_url, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
+        let embedding = match embed_with_retry(&http, EMBED_URL, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
             Ok(v)  => v,
             Err(e) => {
                 // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.
@@ -2114,30 +2097,10 @@ pub async fn admin_ingest_text(
         _ => return HttpResponse::InternalServerError()
             .json(ApiError::new(500, "GEMINI_API_KEY tidak dikonfigurasi")),
     };
-    let embed_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent";
 
-    // Chunking — strategy dari request (default: auto-detect)
-    let min_chars = chunk_min_chars();
-    let max_chars = chunk_max_chars();
-    // Resolve Auto → deteksi berdasarkan konten
-    let resolved_strategy = if body.chunk_strategy == crate::models::ChunkStrategy::Auto {
-        crate::models::ChunkStrategy::detect(&raw_text)
-    } else {
-        body.chunk_strategy.clone()
-    };
-
-    let chunks_text: Vec<String> = match &resolved_strategy {
-        crate::models::ChunkStrategy::Semantic | crate::models::ChunkStrategy::Auto => {
-            match semantic_chunk(&http, embed_url, &gemini_key, &raw_text,
-                chunk_similarity_threshold(), min_chars, max_chars).await {
-                Ok(c)  => c,
-                Err(e) => return HttpResponse::BadGateway()
-                    .json(ApiError::new(502, format!("Semantic chunk error: {e}"))),
-            }
-        }
-        crate::models::ChunkStrategy::Sentence   => sentence_chunk(&raw_text, min_chars, max_chars),
-        crate::models::ChunkStrategy::Structural => structural_chunk(&raw_text, min_chars, max_chars),
-        crate::models::ChunkStrategy::Fixed      => fixed_chunk(&raw_text, max_chars),
+    let (_, chunks_text) = match chunk_text(&raw_text, &body.chunk_strategy, &http, &gemini_key).await {
+        Ok(result) => result,
+        Err(resp) => return resp,
     };
 
     let title      = body.title.clone();
@@ -2149,7 +2112,7 @@ pub async fn admin_ingest_text(
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
     for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, embed_url, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
+        let embedding = match embed_with_retry(&http, EMBED_URL, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
             Ok(v)  => v,
             Err(e) => {
                 // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.
@@ -2183,3 +2146,33 @@ pub async fn admin_ingest_text(
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::extract_page;
+
+    // Real pages saved on 2026-10-18, so parsing can be tested without the network.
+    const TENAGA_PENDIDIK: &str = include_str!("../tests/fixtures/tenaga_pendidik.html");
+    const D_TENDIK: &str = include_str!("../tests/fixtures/d_tendik.html");
+
+    #[test]
+    fn wordpress_page_reads_article_not_sidebar() {
+        let page = extract_page(TENAGA_PENDIDIK, "https://jteti.ugm.ac.id/tenaga-pendidik/", None);
+        let text = format!("{}\n{:?}", page.text, page.tables);
+        // Staff list (inside <article>) is kept…
+        assert!(text.contains("Insap Santosa"));
+        assert!(text.contains("Nailil Husna"));
+        // …the news sidebar (outside <article>) is not.
+        assert!(!text.contains("Taekwondo"), "sidebar news leaked into the text");
+        assert!(!text.contains("Tumiran, Pakar Energi"), "sidebar news leaked into the text");
+    }
+
+    #[test]
+    fn quarto_page_uses_page_title() {
+        let page = extract_page(D_TENDIK, "https://mtiugm.github.io/panduan_pmpsti/appendix/d_tendik.html", None);
+        assert!(page.title.starts_with("Lampiran D"), "unexpected title: {}", page.title);
+        assert!(page.text.contains("Tabel D.1"));
+        assert_eq!(page.tables.len(), 1);
+        assert_eq!(page.tables[0].rows.len(), 40);
+    }
+}

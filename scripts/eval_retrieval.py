@@ -20,7 +20,8 @@ Metrics:
   ans@5                    : every kata_kunci group appears in the text of the top 5 chunks
   e2e (--backend)          : kata_kunci appears in the backend's ANSWER (/api/ask_public),
                              including out-of-scope questions that must be answered "not found".
-                             Uses LLM quota (about 3 Gemini calls per question).
+                             Uses LLM quota (about 3 Gemini calls per question; the free tier
+                             allows 500 per day). Request errors are excluded from the score.
 Questions whose source is not ingested yet, or is out of scope, are counted separately.
 
 The database comes from DATABASE_URL (root .env) and is opened READ-ONLY.
@@ -251,14 +252,25 @@ def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
             print(f"    (Gemini 429 — waiting 30 s, retry {attempt + 1}/3)")
             time.sleep(30)
         flat = " ".join(answer.split())
-        ok = answer_found([(None, None, flat, None)], r["kata_kunci"])
-        results.append({"id": r["id"], "type": r["jenis"], "q": r["pertanyaan"], "ok": ok, "answer": flat[:500]})
-        print(f"  {'✓' if ok else '·'} {r['id']:<4} {r['pertanyaan'][:60]}")
+        # No answer at all (HTTP error, Gemini quota, network): not a wrong answer —
+        # reported separately and left out of the score.
+        error = flat.startswith(("[HTTP", "[ERROR]"))
+        ok = not error and answer_found([(None, None, flat, None)], r["kata_kunci"])
+        results.append({"id": r["id"], "type": r["jenis"], "q": r["pertanyaan"], "ok": ok,
+                        "error": error, "answer": flat[:500]})
+        print(f"  {'!' if error else '✓' if ok else '·'} {r['id']:<4} {r['pertanyaan'][:60]}")
         if verbose and not ok:
             print(f"        → {flat[:220]}")
-    score = sum(p["ok"] for p in results) / (len(results) or 1)
-    print(f"End-to-end correct: {sum(p['ok'] for p in results)}/{len(results)} ({score:.0%})")
-    return {"score": score, "questions": results}
+        if error and "PerDay" in flat:
+            print("    Gemini DAILY quota exhausted — stopping; the remaining questions are not run.")
+            break
+    answered = [p for p in results if not p["error"]]
+    score = sum(p["ok"] for p in answered) / (len(answered) or 1)
+    errors = len(results) - len(answered)
+    skipped = len(rows) - len(results)
+    print(f"End-to-end correct: {sum(p['ok'] for p in answered)}/{len(answered)} answered ({score:.0%})"
+          + (f" — {errors} request errors, {skipped} not run (excluded)" if errors or skipped else ""))
+    return {"score": score, "answered": len(answered), "errors": errors, "not_run": skipped, "questions": results}
 
 
 def main() -> None:

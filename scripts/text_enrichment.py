@@ -31,10 +31,9 @@ ACRONYMS: dict[str, str] = {
     "KKN":    "Kuliah Kerja Nyata",
     "PKL":    "Praktik Kerja Lapangan",
     "DO":     "Drop Out",
-    "TK":     "Tidak Kehadiran",
 
     # Program studi / institusi
-    "PMPSTI": "Program Magister Pengelolaan Sistem Teknik Informasi",
+    "PMPSTI": "Program Magister Program Studi Teknologi Informasi",  # official name (guidebook p. 4)
     "MTI":    "Magister Teknologi Informasi",
     "DTETI":  "Departemen Teknik Elektro dan Teknologi Informasi",
     "FT":     "Fakultas Teknik",
@@ -71,7 +70,6 @@ ACRONYMS: dict[str, str] = {
 
     # Proses tesis/penelitian
     "KTI":    "Karya Tulis Ilmiah",
-    "BAB":    "Bagian",
     "DOI":    "Digital Object Identifier",
     "ISSN":   "International Standard Serial Number",
     "ISBN":   "International Standard Book Number",
@@ -88,19 +86,18 @@ ACRONYMS: dict[str, str] = {
     "IoT":    "Internet of Things",
 }
 
-# Regex: akronim yang berdiri sendiri (dibatasi word boundary)
-# Bangun satu kali saat import
-_ACRONYM_PATTERNS: list[tuple[re.Pattern, str]] = []
+# Regex per acronym, standing alone (word boundaries). Built once at import.
+_ACRONYM_PATTERNS: list[tuple[re.Pattern, str, str]] = []
 
 def _build_patterns():
     for acr, expansion in ACRONYMS.items():
-        # Match akronim yang BELUM punya penjelasan di sebelahnya
-        # Contoh: "3 SKS" → "3 Satuan Kredit Semester (SKS)"
-        # Tapi "SKS (Satuan Kredit Semester)" tidak diubah
+        # Match only acronyms that are NOT already explained next to them:
+        # "3 SKS" → "3 Satuan Kredit Semester (SKS)", but "SKS (Satuan …)" stays.
+        # Case-SENSITIVE on purpose: acronyms are written as in ACRONYMS ("SKS", "IoT").
+        # Ignoring case turned ordinary words into acronyms ("api" = fire → "API").
         pat = re.compile(
             r'\b' + re.escape(acr) + r'\b'
-            r'(?!\s*[\(\[])',   # tidak diikuti ( atau [ (sudah ada penjelasan)
-            re.IGNORECASE
+            r'(?!\s*[\(\[])'    # not followed by ( or [ (already explained)
         )
         _ACRONYM_PATTERNS.append((pat, acr, expansion))
 
@@ -127,14 +124,10 @@ def expand_acronyms(text: str, max_expansions_per_acr: int = 2) -> str:
         if n >= max_expansions_per_acr:
             return match.group(0)  # Biarkan apa adanya
         counts[acr] = n + 1
-        original = match.group(0)
-        # Pertahankan kapitalisasi asli
-        if original.isupper():
-            return f"{expansion} ({original})"
-        elif original[0].isupper():
-            return f"{expansion.capitalize()} ({original})"
-        else:
-            return f"{expansion.lower()} ({original})"
+        # Matching is case-sensitive, so the match is the acronym exactly as listed;
+        # use the expansion as written (str.capitalize() would turn "Internet of Things"
+        # into "Internet of things").
+        return f"{expansion} ({match.group(0)})"
 
     for pat, acr, expansion in _ACRONYM_PATTERNS:
         text = pat.sub(

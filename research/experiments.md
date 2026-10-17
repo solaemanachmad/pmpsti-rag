@@ -116,6 +116,58 @@ Remaining failures:
 - **Q20, Q21**: answers are correct on manual reading; the expected keywords ("Kaprodi",
   "kedua pembimbing") do not match the document wording ("Ketua Program Studi") → scoring false negatives.
 
+## E5 — P2: page reading, table extraction and data repair · 2026-10-18 · branch `feat/p2-ingest-readers`
+
+`20261018-0044_e5-before.json`, `20261018-0054_e5-after.json` (run 1), `20261018-0119_e5-after-run2.json` (run 2),
+`20261018-0058_e5-labels-retrieval.json` (rejected variant). Corpus after: `data/corpus_2026-10-18.json`.
+
+Changes (code):
+- **Main-content selection**: content areas tried in priority order (Quarto main → WordPress post
+  content → … → body). A single CSS selector list returned the first match in page order, which is
+  always `<body>`, so menus and sidebar news were ingested.
+- **Reader module** (`src/reader.rs`): visible text from the parsed DOM (skips scripts, navigation,
+  tables); tables read separately — R/Quarto htmlwidget JSON (column-major, all rows, also those hidden
+  behind 10-rows-per-page pagination), DataTables JSON, and HTML tables in the content area.
+- **Table-aware chunking**: each row keeps its column names (`Nama: … | NIP: … | Email: …`), rows
+  grouped up to 1,200 chars with the table label and row range repeated; plus one summary chunk with
+  the row count and every row's name (for count / list questions).
+- **Fetch**: non-2xx responses are rejected (a moved page was about to be ingested as GitHub's 404 page);
+  `&nbsp;` normalised to spaces.
+- **Ingest enrichment** (`scripts/text_enrichment.py`): wrong expansion of PMPSTI fixed; acronym matching
+  made case-sensitive (lowercase words such as *api* were expanded); BAB and TK removed.
+
+Changes (data, `test-embedding` only): 6 chunks with the wrong PMPSTI expansion corrected and
+re-embedded; 3 URL documents (151 chunks, 55 with JavaScript) replaced by the new reader's output
+(Tenaga Pendidik 14, EWMP 7, new Tenaga Kependidikan 4); the duplicate Kurikulum copy (URL now 404,
+same content as `chapter2/curricula`) not re-added. Corpus: 343 → 217 chunks, JavaScript chunks 55 → 0.
+
+Test set: 3 questions added (Q31 staff e-mail, Q32 staff count, Q33 EWMP average) → 26 scored e2e.
+
+| Run | Original 23 | New 3 (Q31–Q33) | Total |
+|---|---|---|---|
+| before (old data, new code) | 20 / 23 | 0 / 3 | 20 / 26 (77 %) |
+| after, run 1 | 21 / 23 | 3 / 3 | **24 / 26 (92 %)** |
+| after, run 2 | 18 / 20 answered | — | 18 / 20 answered — 6 requests failed (Gemini **daily** free-tier quota, 500/day); not scored |
+
+Paired (run 1 vs before): 4 fail→pass (Q01, Q31, Q32, Q33), 0 pass→fail; exact McNemar p = 0.125
+(too few discordant pairs for significance — the new questions were written for this change).
+Remaining failures in every run: Q20, Q21 (keyword wording, see E4).
+
+Retrieval (document set, now 44 scored incl. the two staff questions, both at rank 1):
+hit@1 0.905 → 0.864, hit@5 0.976 → 0.955, ans@5 0.875 → 0.958. The document-level drop comes from
+three lecturer questions: the EWMP table — previously unreadable — is now a clean list of 28 PMPSTI
+lecturers and competes with the Tenaga Pendidik page (e.g. "Who are the professors…" rank 2 → 6).
+For some of these questions EWMP is arguably a valid source; labels were not changed after seeing
+results (questions.json is still awaiting human review).
+
+Rejected variant (E5b): prefixing table chunks with the page's own heading ("Tenaga Pendidik — Staf
+Pengajar …") gave no clear gain (hit@1 0.864 → 0.841; one lecturer question better, two worse) and
+duplicated captions on the EWMP page → reverted.
+
+Lessons for the method: the e2e mode now excludes request errors from the score (they were counted
+as wrong answers) and stops on a daily-quota error; one e2e run of 26 questions costs ≈ 80 Gemini
+generation calls, so ~6 runs per day fit in the free tier.
+
 ---
 
 ## Threats to validity (to address before publication)
