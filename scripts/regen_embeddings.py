@@ -1,72 +1,90 @@
 #!/usr/bin/env python3
 """
-regen_embeddings.py — Backfill embeddings for documents in Neon DB.
+regen_embeddings.py — Buat ulang embedding dokumen dengan Gemini gemini-embedding-001.
 
-Generates embeddings for rows WHERE embedding IS NULL using the same
-model the Rust backend uses: intfloat/multilingual-e5-base (768-dim).
+Model ini SAMA dengan yang dipakai backend Rust untuk meng-embed pertanyaan,
+jadi skor vektor di pencarian hybrid menjadi bermakna.
 
-Usage:
-    # Point at Neon (get connection string from Neon console)
-    DATABASE_URL="postgresql://user:pass@host/db?sslmode=require" \\
-        python scripts/regen_embeddings.py
+Pemakaian:
+    # Cek dulu berapa baris yang akan diproses (tanpa menulis apa pun)
+    python regen_embeddings.py --all --dry-run
 
-    # Point at local DB
-    python scripts/regen_embeddings.py
+    # Re-embed SEMUA baris (dipakai sekali untuk migrasi dari e5 → Gemini)
+    python regen_embeddings.py --all
+
+    # Hanya isi baris yang embedding-nya masih NULL (mis. gagal karena kuota)
+    python regen_embeddings.py
+
+DATABASE_URL dan GEMINI_API_KEY dibaca dari env atau file .env di root project.
+Contoh ke branch Neon:
+    DATABASE_URL="postgresql://...neon.tech/neondb?sslmode=require" python regen_embeddings.py --all
 """
+import argparse
 import os
 import sys
 
 import psycopg2
-from langchain_huggingface import HuggingFaceEmbeddings
-from pgvector.psycopg2 import register_vector
 
-DB_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://admin:admin@localhost:5432/pmpsti_rag",
-)
-BATCH_SIZE = 10
+from gemini_embed import GeminiEmbeddings  # juga memuat .env
+
+CHUNK = 50  # baris per commit
 
 
 def main() -> None:
-    print("Loading model intfloat/multilingual-e5-base …")
-    model = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-base")
-    print("Model loaded.")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--all", action="store_true",
+                    help="Re-embed semua baris (bukan hanya yang NULL)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Hanya tampilkan jumlah baris, tidak memanggil API / menulis DB")
+    ap.add_argument("--db", default=os.environ.get(
+        "DATABASE_URL", "postgresql://admin:admin@localhost:5432/pmpsti_rag"))
+    args = ap.parse_args()
 
-    conn = psycopg2.connect(DB_URL)
-    register_vector(conn)
+    host = args.db.split("@")[-1].split("/")[0]
+    print(f"Database : {host}")
+    print(f"Mode     : {'SEMUA baris' if args.all else 'hanya embedding NULL'}")
+
+    conn = psycopg2.connect(args.db)
     cur = conn.cursor()
 
-    cur.execute(
-        "SELECT id, content FROM documents WHERE embedding IS NULL ORDER BY id"
-    )
+    where = "" if args.all else "WHERE embedding IS NULL"
+    cur.execute(f"SELECT id, COALESCE(title, ''), COALESCE(content, '') "
+                f"FROM documents {where} ORDER BY id")
     rows = cur.fetchall()
     total = len(rows)
-    print(f"Found {total} documents without embeddings.\n")
+    print(f"Baris    : {total}\n")
 
-    if total == 0:
-        print("Nothing to do.")
+    if total == 0 or args.dry_run:
+        print("Selesai (tidak ada yang ditulis).")
         return
 
-    for i in range(0, total, BATCH_SIZE):
-        batch = rows[i : i + BATCH_SIZE]
+    if args.all:
+        ans = input(f"Timpa embedding {total} baris di {host}? ketik 'ya': ")
+        if ans.strip().lower() != "ya":
+            print("Dibatalkan.")
+            sys.exit(1)
+
+    model = GeminiEmbeddings(task_type="RETRIEVAL_DOCUMENT")
+
+    for i in range(0, total, CHUNK):
+        batch = rows[i:i + CHUNK]
         ids = [r[0] for r in batch]
-        # E5 models require "passage: " prefix for documents
-        texts = [f"passage: {r[1]}" for r in batch]
+        titles = [r[1] for r in batch]
+        # Judul ikut dimasukkan ke teks supaya konteks dokumen ikut ter-embed
+        texts = [f"{r[1]}\n\n{r[2]}" if r[1] else r[2] for r in batch]
 
-        embeddings = model.embed_documents(texts)
+        vecs = model.embed(texts, "RETRIEVAL_DOCUMENT", titles=titles)
 
-        for doc_id, emb in zip(ids, embeddings):
-            cur.execute(
-                "UPDATE documents SET embedding = %s WHERE id = %s",
-                (emb, doc_id),
-            )
-
+        for doc_id, emb in zip(ids, vecs):
+            vec_literal = "[" + ",".join(f"{x:.8f}" for x in emb) + "]"
+            cur.execute("UPDATE documents SET embedding = %s::vector WHERE id = %s",
+                        (vec_literal, doc_id))
         conn.commit()
-        done = min(i + BATCH_SIZE, total)
-        pct = done / total * 100
-        print(f"  [{done:3d}/{total}]  {pct:5.1f}%  (ids {ids[0]}…{ids[-1]})")
 
-    print("\nDone! All embeddings written to DB.")
+        done = min(i + CHUNK, total)
+        print(f"  [{done:4d}/{total}] {done / total * 100:5.1f}%  (id {ids[0]}…{ids[-1]})")
+
+    print("\nSelesai! Semua embedding sudah memakai Gemini gemini-embedding-001.")
     cur.close()
     conn.close()
 

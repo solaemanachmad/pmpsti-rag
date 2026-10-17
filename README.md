@@ -102,7 +102,7 @@ Server listening on 0.0.0.0:8080
 AI model loaded successfully.
 ```
 
-> Saat pertama kali dijalankan, fastembed akan mengunduh model `multilingual-e5-base` (~500 MB). Proses ini hanya terjadi sekali — model di-cache di folder `.fastembed_cache/`.
+> Backend membutuhkan `GEMINI_API_KEY` di `.env` untuk meng-embed pertanyaan (Gemini `gemini-embedding-001`).
 
 ---
 
@@ -156,6 +156,19 @@ python ingest.py
 
 Dokumen yang sudah diingest akan muncul di halaman Admin → Documents.
 
+> `ingest.py` butuh `GEMINI_API_KEY` (dari `.env` di root). Target DB bisa diatur dengan env `DATABASE_URL` atau `--db`.
+
+### Re-embed semua dokumen (setelah ganti model embedding)
+
+Embedding dokumen **harus** dibuat dengan model yang sama dengan backend (Gemini `gemini-embedding-001`).
+
+```bash
+cd scripts
+python regen_embeddings.py --all --dry-run   # cek jumlah baris
+python regen_embeddings.py --all             # timpa semua embedding
+python regen_embeddings.py                   # hanya isi yang masih NULL
+```
+
 ---
 
 ## Perintah Berguna
@@ -198,6 +211,37 @@ podman stop pmpsti-db
 
 ---
 
+## Alur Kerja Git & Deploy
+
+`main` = **Production** (`pmpsti-rag.vercel.app`). Perubahan dikerjakan di branch terpisah dan diuji di **Preview** Vercel sebelum masuk Production.
+
+```
+buat branch → push → buka PR → tes Preview → merge ke main → Vercel deploy ke Production otomatis → hapus branch
+```
+
+1. **Buat branch** dari `main` yang terbaru:
+   ```bash
+   git switch main && git pull
+   git switch -c feat/nama-fitur      # atau fix/nama-perbaikan
+   ```
+2. **Commit & push** branch:
+   ```bash
+   git add <file> && git commit -m "feat: deskripsi singkat"
+   git push -u origin feat/nama-fitur
+   ```
+3. **Buka Pull Request** ke `main` di GitHub (tombol *Compare & pull request*).
+4. **Tes Preview** — Vercel otomatis membuat URL Preview untuk branch tersebut (link muncul di PR). Cek di HP dan laptop.
+5. **Merge ke `main`** — klik *Merge pull request* → *Confirm merge*. Vercel otomatis deploy ke Production.
+6. **Hapus branch** — klik *Delete branch* di PR, lalu bersihkan di lokal:
+   ```bash
+   git switch main && git pull
+   git branch -d feat/nama-fitur
+   ```
+
+> Environment variable untuk Preview diatur terpisah dari Production di Vercel → Settings → Environment Variables. Tanpa `PUBLIC_API_URL`, frontend memakai proxy `/api` bawaan.
+
+---
+
 ## Struktur Project
 
 ```
@@ -231,9 +275,9 @@ pmpsti_rag/
 |----------|-----------|
 | Backend | Rust, Actix-web 4, SQLx 0.7 |
 | Database | PostgreSQL 16, pgvector (HNSW index) |
-| Embedding | fastembed `multilingual-e5-base` |
+| Embedding | Gemini `gemini-embedding-001` (768-dim, taskType RETRIEVAL_DOCUMENT / RETRIEVAL_QUERY) — dipakai oleh ingest Python **dan** backend |
 | Search | Hybrid: 70% vector + 30% BM25 |
 | Auth | JWT HS256, Argon2id |
 | Frontend | SvelteKit, Tailwind CSS v3 |
 | LLM | Ollama / Groq / OpenAI-compatible |
-| Ingest | Python, LaBSE, PyMuPDF, SemanticChunker |
+| Ingest | Python, PyMuPDF, SemanticChunker (model lokal e5 hanya untuk menentukan batas chunk) |

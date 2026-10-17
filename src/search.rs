@@ -16,6 +16,7 @@ pub struct SearchEngine {
 #[serde(rename_all = "camelCase")]
 struct EmbedRequest {
     content: EmbedContent,
+    task_type: &'static str,
     output_dimensionality: u32,
 }
 
@@ -57,6 +58,8 @@ impl SearchEngine {
             content: EmbedContent {
                 parts: vec![EmbedPart { text: query.to_string() }],
             },
+            // Harus pasangan dari RETRIEVAL_DOCUMENT yang dipakai saat ingest
+            task_type: "RETRIEVAL_QUERY",
             output_dimensionality: 768,
         };
 

@@ -13,7 +13,10 @@ use crate::models::*;
 use crate::rag::RagEngine;
 
 // ── Gemini Embed helper with retry ─────────────────────────────────────────
-/// Embed `text` using Gemini text-embedding-004 with exponential backoff retry.
+/// Embed `text` using Gemini gemini-embedding-001 with exponential backoff retry.
+/// `task_type`: "RETRIEVAL_DOCUMENT" untuk chunk yang disimpan,
+/// "SEMANTIC_SIMILARITY" untuk perbandingan antar kalimat (semantic chunking).
+/// Query pencarian memakai "RETRIEVAL_QUERY" (lihat search.rs).
 /// Retries up to 3 times on 429/503 (rate-limit / overload).
 /// Returns the 768-dim embedding or an error string.
 async fn embed_with_retry(
@@ -21,9 +24,14 @@ async fn embed_with_retry(
     embed_url:  &str,
     gemini_key: &str,
     text:       &str,
+    task_type:  &str,
 ) -> Result<Vec<f32>, String> {
     #[derive(serde::Serialize)]
-    struct EmbedReq { content: EmbedContent, #[serde(rename="outputDimensionality")] output_dimensionality: u32 }
+    struct EmbedReq {
+        content: EmbedContent,
+        #[serde(rename="taskType")] task_type: String,
+        #[serde(rename="outputDimensionality")] output_dimensionality: u32,
+    }
     #[derive(serde::Serialize)]
     struct EmbedContent { parts: Vec<EmbedPart> }
     #[derive(serde::Serialize)]
@@ -45,6 +53,7 @@ async fn embed_with_retry(
 
     let body = EmbedReq {
         content: EmbedContent { parts: vec![EmbedPart { text: text.to_string() }] },
+        task_type: task_type.to_string(),
         output_dimensionality: 768,
     };
 
@@ -149,7 +158,7 @@ async fn semantic_chunk(
     // ── 2. Embed tiap kalimat ────────────────────────────────────────
     let mut sent_embeddings: Vec<Vec<f32>> = Vec::with_capacity(sentences.len());
     for sentence in &sentences {
-        let emb = embed_with_retry(http, embed_url, gemini_key, sentence).await?;
+        let emb = embed_with_retry(http, embed_url, gemini_key, sentence, "SEMANTIC_SIMILARITY").await?;
         sent_embeddings.push(emb);
     }
 
@@ -2052,7 +2061,7 @@ pub async fn admin_ingest_url(
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
     for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, embed_url, &gemini_key, chunk_text).await {
+        let embedding = match embed_with_retry(&http, embed_url, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
             Ok(v)  => v,
             Err(e) => {
                 // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.
@@ -2149,7 +2158,7 @@ pub async fn admin_ingest_text(
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
     for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, embed_url, &gemini_key, chunk_text).await {
+        let embedding = match embed_with_retry(&http, embed_url, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
             Ok(v)  => v,
             Err(e) => {
                 // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.

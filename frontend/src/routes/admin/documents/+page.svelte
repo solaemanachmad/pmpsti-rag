@@ -1,356 +1,300 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
   import { admin } from '$lib/api/client';
   import type { AdminDocument, AdminChunk } from '$lib/api/client';
-  import { Loader2, Trash2, RefreshCw, Globe, Plus, X, CheckCircle2,
-           AlertCircle, ChevronDown, ChevronRight, Pencil, Check } from 'lucide-svelte';
+  import { errorMessage, hostname } from '$lib/format';
+  import PageHeader from '$lib/components/ui/PageHeader.svelte';
+  import Alert from '$lib/components/ui/Alert.svelte';
+  import Modal from '$lib/components/ui/Modal.svelte';
+  import LoadingState from '$lib/components/ui/LoadingState.svelte';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import { Loader2, Trash2, RefreshCw, Globe, ChevronDown, Pencil, Search, FileText, ExternalLink, Layers } from 'lucide-svelte';
 
   let documents: AdminDocument[] = [];
   let loading = false;
   let error = '';
+  let notice = '';
+  let search = '';
+  let category = '';
 
-  // Ingest form
+  // Ingest
   let showIngest = false;
   let ingestUrl = ''; let ingestTitle = ''; let ingestCategory = ''; let ingestSubcategory = '';
   let ingestChunkStrategy = 'auto';
-  let ingestLoading = false; let ingestError = ''; let ingestSuccess = '';
+  let ingestLoading = false; let ingestError = '';
 
   const chunkStrategyOptions = [
-    { value: 'auto',       label: 'Otomatis',   desc: 'Deteksi otomatis berdasarkan konten (disarankan)' },
-    { value: 'sentence',   label: 'Sentence',    desc: 'Cocok untuk artikel, prosa — 0 Gemini quota saat chunking' },
-    { value: 'structural', label: 'Structural',  desc: 'Cocok untuk daftar bernomor, tabel, data dosen' },
-    { value: 'semantic',   label: 'Semantic',    desc: 'Paling akurat, menggunakan Gemini quota lebih banyak' },
+    { value: 'auto',       label: 'Auto',       desc: 'Detects the best strategy from the content (recommended).' },
+    { value: 'sentence',   label: 'Sentence',   desc: 'Best for articles and prose. Uses no Gemini quota while chunking.' },
+    { value: 'structural', label: 'Structural', desc: 'Best for numbered lists, tables and staff directories.' },
+    { value: 'semantic',   label: 'Semantic',   desc: 'Most accurate, but uses more Gemini quota.' }
   ];
 
-  // Chunk drawer — map document_id → chunk list
+  // Chunks
   let expandedDoc: string | null = null;
   let chunksByDoc: Record<string, AdminChunk[]> = {};
   let chunksLoading: Record<string, boolean> = {};
   let chunksError: Record<string, string> = {};
 
-  // Edit document metadata
-  let editingDoc: string | null = null;
+  // Edit
+  let editing: AdminDocument | null = null;
   let editTitle = ''; let editCategory = ''; let editSubcategory = '';
-  let savingDoc = false;
+  let savingDoc = false; let editError = '';
 
-  // Load on mount via reactive
-  let _loaded = false;
-  $: if (!_loaded) { _loaded = true; loadDocs(); }
+  onMount(loadDocs);
 
   async function loadDocs() {
     loading = true; error = '';
     try { documents = await admin.documents(); }
-    catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
+    catch (e) { error = errorMessage(e); }
     finally { loading = false; }
+  }
+
+  function refresh() {
+    chunksByDoc = {};
+    loadDocs();
   }
 
   async function toggleChunks(docId: string) {
     if (expandedDoc === docId) { expandedDoc = null; return; }
     expandedDoc = docId;
-    if (chunksByDoc[docId]) return; // already loaded
+    if (chunksByDoc[docId]) return;
     chunksLoading = { ...chunksLoading, [docId]: true };
     chunksError = { ...chunksError, [docId]: '' };
     try {
       chunksByDoc = { ...chunksByDoc, [docId]: await admin.listChunks(docId) };
-    } catch (e: unknown) {
-      chunksError = { ...chunksError, [docId]: e instanceof Error ? e.message : String(e) };
+    } catch (e) {
+      chunksError = { ...chunksError, [docId]: errorMessage(e) };
     } finally {
       chunksLoading = { ...chunksLoading, [docId]: false };
     }
   }
 
-  async function deleteDoc(id: string) {
-    if (!confirm('Hapus dokumen ini? Semua chunk terkait akan dihapus.')) return;
+  async function deleteDoc(doc: AdminDocument) {
+    if (!confirm(`Delete "${doc.title || doc.document_id}"? All of its chunks will be removed.`)) return;
     try {
-      await admin.deleteDocument(id);
+      await admin.deleteDocument(doc.document_id);
+      if (expandedDoc === doc.document_id) expandedDoc = null;
       await loadDocs();
-      if (expandedDoc === id) expandedDoc = null;
-    } catch (e) { alert('Gagal: ' + e); }
+    } catch (e) { error = errorMessage(e); }
   }
 
-  function startEditDoc(doc: AdminDocument) {
-    editingDoc = doc.document_id;
+  function startEdit(doc: AdminDocument) {
+    editing = doc;
     editTitle = doc.title;
     editCategory = doc.category;
     editSubcategory = doc.subcategory ?? '';
+    editError = '';
   }
 
-  function cancelEditDoc() { editingDoc = null; }
-
   async function saveDoc() {
-    if (!editingDoc) return;
-    savingDoc = true;
+    if (!editing) return;
+    const id = editing.document_id;
+    const patch = { title: editTitle.trim(), category: editCategory.trim(), subcategory: editSubcategory.trim() };
+    savingDoc = true; editError = '';
     try {
-      await admin.updateDocument(editingDoc, {
-        title: editTitle.trim(),
-        category: editCategory.trim(),
-        subcategory: editSubcategory.trim(),
-      });
-      // Update local state
-      documents = documents.map(d =>
-        d.document_id === editingDoc
-          ? { ...d, title: editTitle.trim(), category: editCategory.trim(), subcategory: editSubcategory.trim() }
-          : d
-      );
-      // Clear cached chunks so they reload with new metadata
-      const { [editingDoc]: _, ...rest } = chunksByDoc;
+      await admin.updateDocument(id, patch);
+      documents = documents.map(d => (d.document_id === id ? { ...d, ...patch } : d));
+      const { [id]: _, ...rest } = chunksByDoc;
       chunksByDoc = rest;
-      editingDoc = null;
-    } catch (e) { alert('Gagal simpan: ' + e); }
+      editing = null;
+    } catch (e) { editError = errorMessage(e); }
     finally { savingDoc = false; }
   }
 
+  function openIngest() {
+    ingestError = '';
+    showIngest = true;
+  }
+
   async function doIngest() {
-    if (!ingestUrl.trim()) { ingestError = 'URL wajib diisi'; return; }
-    ingestLoading = true; ingestError = ''; ingestSuccess = '';
+    if (!ingestUrl.trim()) { ingestError = 'URL is required.'; return; }
+    ingestLoading = true; ingestError = ''; notice = '';
     try {
       const res = await admin.ingestUrl({
         url: ingestUrl.trim(),
         title: ingestTitle.trim() || undefined,
         category: ingestCategory.trim() || undefined,
         subcategory: ingestSubcategory.trim() || undefined,
-        chunk_strategy: ingestChunkStrategy,
+        chunk_strategy: ingestChunkStrategy
       });
-      ingestSuccess = `Berhasil: "${res.title}" — ${res.chunks} chunk diindeks`;
-      ingestUrl = ''; ingestTitle = ''; ingestCategory = ''; ingestSubcategory = '';
+      notice = `Indexed “${res.title}” — ${res.chunks} chunks.`;
+      ingestUrl = ingestTitle = ingestCategory = ingestSubcategory = '';
       ingestChunkStrategy = 'auto';
       showIngest = false;
       await loadDocs();
-    } catch (e: unknown) { ingestError = e instanceof Error ? e.message : String(e); }
+    } catch (e) { ingestError = errorMessage(e); }
     finally { ingestLoading = false; }
   }
+
+  $: categories = [...new Set(documents.map(d => d.category).filter(Boolean))].sort();
+  $: totalChunks = documents.reduce((n, d) => n + (d.chunk_count ?? 0), 0);
+  $: q = search.trim().toLowerCase();
+  $: filtered = documents.filter(d =>
+    (!category || d.category === category) &&
+    (!q || [d.title, d.source_url, d.category, d.subcategory].some(v => v?.toLowerCase().includes(q)))
+  );
 </script>
 
-<svelte:head><title>Dokumen — Admin PMPSTI</title></svelte:head>
+<svelte:head><title>Documents · Admin</title></svelte:head>
 
-<div class="mb-6 flex items-center justify-between gap-3 flex-wrap">
-  <div>
-    <h1 class="text-xl font-bold">Dokumen</h1>
-    <p class="text-sm text-muted-foreground mt-0.5">{documents.length} dokumen terindeks</p>
-  </div>
-  <div class="flex items-center gap-2">
-    <button on:click={() => { documents = []; chunksByDoc = {}; loadDocs(); }}
-      class="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground border rounded-lg px-3 py-2 transition-colors">
-      <RefreshCw size={13} /> Refresh
-    </button>
-    <button on:click={() => { showIngest = !showIngest; ingestError = ''; ingestSuccess = ''; }}
-      class="flex items-center gap-1.5 text-sm text-white bg-[#002147] hover:bg-[#003580] px-3 py-2 rounded-lg transition-colors">
-      <Globe size={13} /> Tambah URL
-    </button>
-  </div>
-</div>
-
-{#if ingestSuccess}
-  <div class="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400
-              border border-emerald-200 dark:border-emerald-800 rounded-lg px-4 py-2.5 text-sm mb-4">
-    <CheckCircle2 size={15} />{ingestSuccess}
-  </div>
-{/if}
-
-{#if showIngest}
-  <div class="bg-card border rounded-xl p-5 mb-5">
-    <div class="flex items-center justify-between mb-4">
-      <h3 class="font-semibold text-sm">Tambah Sumber dari URL</h3>
-      <button on:click={() => showIngest = false} class="text-muted-foreground hover:text-foreground"><X size={15} /></button>
+<!-- Ingest modal -->
+<Modal open={showIngest} title="Add a source from URL" size="lg" on:close={() => !ingestLoading && (showIngest = false)}>
+  <form id="ingest" on:submit|preventDefault={doIngest} class="space-y-4">
+    <div>
+      <label for="ingest-url" class="label">URL</label>
+      <input id="ingest-url" bind:value={ingestUrl} type="url" placeholder="https://example.ugm.ac.id/page" class="input" required />
     </div>
-    <div class="grid gap-3">
+    <div class="grid sm:grid-cols-3 gap-3">
       <div>
-        <label for="ingest-url" class="block text-xs font-medium text-muted-foreground mb-1">URL <span class="text-rose-500">*</span></label>
-        <input id="ingest-url" bind:value={ingestUrl} placeholder="https://example.com/halaman"
-          class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:ring-1 focus:ring-[#0055A5] outline-none" />
+        <label for="ingest-title" class="label">Title <span class="font-normal opacity-70">(optional)</span></label>
+        <input id="ingest-title" bind:value={ingestTitle} placeholder="Auto-detected" class="input" />
       </div>
-      <div class="grid sm:grid-cols-3 gap-3">
-        <div>
-          <label for="ingest-title" class="block text-xs font-medium text-muted-foreground mb-1">Judul</label>
-          <input id="ingest-title" bind:value={ingestTitle} placeholder="Judul dokumen (opsional)"
-            class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:ring-1 focus:ring-[#0055A5] outline-none" />
-        </div>
-        <div>
-          <label for="ingest-category" class="block text-xs font-medium text-muted-foreground mb-1">Kategori</label>
-          <input id="ingest-category" bind:value={ingestCategory} placeholder="misal: Akademik"
-            class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:ring-1 focus:ring-[#0055A5] outline-none" />
-        </div>
-        <div>
-          <label for="ingest-subcategory" class="block text-xs font-medium text-muted-foreground mb-1">Sub-kategori</label>
-          <input id="ingest-subcategory" bind:value={ingestSubcategory} placeholder="misal: Kurikulum"
-            class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:ring-1 focus:ring-[#0055A5] outline-none" />
-        </div>
-      </div>
-      <!-- Chunk strategy selector -->
       <div>
-        <span class="block text-xs font-medium text-muted-foreground mb-1.5">Strategi Chunking</span>
-        <div class="grid grid-cols-2 sm:grid-cols-5 gap-2">
-          {#each chunkStrategyOptions as opt}
-            <button type="button"
-              on:click={() => ingestChunkStrategy = opt.value}
-              title={opt.desc}
-              class="flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg border text-xs transition-colors
-                     {ingestChunkStrategy === opt.value
-                       ? 'border-[#0055A5] bg-[#0055A5]/10 text-[#0055A5] font-semibold'
-                       : 'border-border text-muted-foreground hover:border-[#0055A5]/50 hover:text-foreground'}">
-              <span class="font-medium">{opt.label}</span>
-            </button>
-          {/each}
-        </div>
-        <p class="text-xs text-muted-foreground mt-1.5">
-          {chunkStrategyOptions.find(o => o.value === ingestChunkStrategy)?.desc ?? ''}
-        </p>
+        <label for="ingest-category" class="label">Category</label>
+        <input id="ingest-category" bind:value={ingestCategory} placeholder="e.g. Academic" class="input" list="doc-categories" />
       </div>
-      {#if ingestError}
-        <div class="flex items-center gap-2 text-rose-600 text-sm"><AlertCircle size={14} />{ingestError}</div>
-      {/if}
-      <div class="flex justify-end">
-        <button on:click={doIngest} disabled={ingestLoading}
-          class="flex items-center gap-2 text-sm text-white bg-[#0055A5] hover:bg-[#003580]
-                 disabled:opacity-50 px-4 py-2 rounded-lg transition-colors">
-          {#if ingestLoading}<Loader2 size={14} class="animate-spin" />Memproses...{:else}<Plus size={14} />Proses & Indeks{/if}
-        </button>
+      <div>
+        <label for="ingest-subcategory" class="label">Subcategory</label>
+        <input id="ingest-subcategory" bind:value={ingestSubcategory} placeholder="e.g. Curriculum" class="input" />
       </div>
     </div>
-  </div>
-{/if}
-
-{#if loading}
-  <div class="flex items-center justify-center py-12 text-muted-foreground gap-2">
-    <Loader2 size={18} class="animate-spin" /> Memuat...
-  </div>
-{:else if error}
-  <div class="bg-destructive/10 text-destructive rounded-lg p-4 text-sm">{error}</div>
-{:else}
-  <div class="bg-card border rounded-xl overflow-hidden">
-    <table class="w-full text-sm">
-      <thead class="bg-muted/50 text-muted-foreground text-xs uppercase tracking-wide">
-        <tr>
-          <th class="px-4 py-2.5 text-left w-6"></th>
-          <th class="px-4 py-2.5 text-left">Judul / Sumber</th>
-          <th class="px-4 py-2.5 text-left hidden sm:table-cell">Kategori</th>
-          <th class="px-4 py-2.5 text-left hidden md:table-cell">Chunk</th>
-          <th class="px-4 py-2.5 text-right">Aksi</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each documents as doc (doc.document_id)}
-          <!-- Document row -->
-          <tr class="border-t hover:bg-muted/30 transition-colors cursor-pointer"
-              on:click={() => editingDoc !== doc.document_id && toggleChunks(doc.document_id)}>
-            <td class="px-3 py-3 text-muted-foreground">
-              {#if expandedDoc === doc.document_id}
-                <ChevronDown size={14} />
-              {:else}
-                <ChevronRight size={14} />
-              {/if}
-            </td>
-            <td class="px-4 py-3">
-              <div class="font-medium line-clamp-1">{doc.title || doc.document_id}</div>
-              {#if doc.source_url}
-                <a href={doc.source_url} target="_blank" rel="noopener noreferrer"
-                   on:click|stopPropagation
-                   class="text-xs text-[#0055A5] hover:underline line-clamp-1">{doc.source_url}</a>
-              {/if}
-            </td>
-            <td class="px-4 py-3 hidden sm:table-cell text-xs text-muted-foreground">
-              {doc.category}{doc.subcategory ? ` / ${doc.subcategory}` : ''}
-            </td>
-            <td class="px-4 py-3 hidden md:table-cell text-xs font-mono text-muted-foreground">{doc.chunk_count ?? '—'}</td>
-            <td class="px-4 py-3 text-right">
-              <div class="flex items-center justify-end gap-1">
-                <button on:click|stopPropagation={() => startEditDoc(doc)}
-                  class="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                  title="Edit metadata">
-                  <Pencil size={14} />
-                </button>
-                <button on:click|stopPropagation={() => deleteDoc(doc.document_id)}
-                  class="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"
-                  title="Hapus dokumen">
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            </td>
-          </tr>
-
-          <!-- Edit metadata form -->
-          {#if editingDoc === doc.document_id}
-            <tr class="border-t bg-blue-50/50 dark:bg-blue-900/10">
-              <td colspan="5" class="px-4 py-4">
-                <div class="flex items-center gap-2 mb-3">
-                  <Pencil size={14} class="text-[#0055A5]" />
-                  <span class="text-sm font-semibold text-[#0055A5]">Edit Metadata Dokumen</span>
-                </div>
-                <div class="grid sm:grid-cols-3 gap-3 mb-3">
-                  <div class="sm:col-span-3">
-                    <label for="edit-title" class="block text-xs font-medium text-muted-foreground mb-1">Judul</label>
-                    <input id="edit-title" bind:value={editTitle} placeholder="Judul dokumen"
-                      on:click|stopPropagation
-                      class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:ring-1 focus:ring-[#0055A5] outline-none" />
-                  </div>
-                  <div>
-                    <label for="edit-category" class="block text-xs font-medium text-muted-foreground mb-1">Kategori</label>
-                    <input id="edit-category" bind:value={editCategory} placeholder="misal: Akademik"
-                      on:click|stopPropagation
-                      class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:ring-1 focus:ring-[#0055A5] outline-none" />
-                  </div>
-                  <div>
-                    <label for="edit-subcategory" class="block text-xs font-medium text-muted-foreground mb-1">Sub-kategori</label>
-                    <input id="edit-subcategory" bind:value={editSubcategory} placeholder="misal: Kurikulum"
-                      on:click|stopPropagation
-                      class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:ring-1 focus:ring-[#0055A5] outline-none" />
-                  </div>
-                  <div class="flex items-end justify-end gap-2">
-                    <button on:click|stopPropagation={cancelEditDoc}
-                      class="text-sm px-3 py-2 border rounded-lg hover:bg-muted transition-colors">
-                      Batal
-                    </button>
-                    <button on:click|stopPropagation={saveDoc} disabled={savingDoc}
-                      class="flex items-center gap-1.5 text-sm px-3 py-2 bg-[#0055A5] text-white rounded-lg
-                             hover:bg-[#003580] disabled:opacity-50 transition-colors">
-                      {#if savingDoc}<Loader2 size={13} class="animate-spin" />{:else}<Check size={13} />{/if}
-                      Simpan
-                    </button>
-                  </div>
-                </div>
-              </td>
-            </tr>
-          {/if}
-
-          <!-- Chunk drawer -->
-          {#if expandedDoc === doc.document_id}
-            <tr class="border-t bg-muted/20">
-              <td colspan="5" class="px-4 py-3">
-                {#if chunksLoading[doc.document_id]}
-                  <div class="flex items-center gap-2 text-sm text-muted-foreground py-2">
-                    <Loader2 size={14} class="animate-spin" /> Memuat chunk...
-                  </div>
-                {:else if chunksError[doc.document_id]}
-                  <p class="text-sm text-rose-500">{chunksError[doc.document_id]}</p>
-                {:else if (chunksByDoc[doc.document_id] ?? []).length === 0}
-                  <p class="text-sm text-muted-foreground">Tidak ada chunk.</p>
-                {:else}
-                  <div class="space-y-2">
-                    {#each chunksByDoc[doc.document_id] as chunk (chunk.id)}
-                      <div class="border rounded-lg bg-card p-3">
-                        <div class="flex items-center justify-between mb-1.5 gap-2">
-                          <span class="text-xs font-mono text-muted-foreground">
-                            Chunk #{chunk.chunk_index} · ID {chunk.id}
-                          </span>
-                        </div>
-                        <p class="text-xs text-foreground/80 leading-relaxed line-clamp-4 whitespace-pre-wrap">
-                          {chunk.content}
-                        </p>
-                      </div>
-                    {/each}
-                  </div>
-                {/if}
-              </td>
-            </tr>
-          {/if}
+    <fieldset>
+      <legend class="label">Chunking strategy</legend>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {#each chunkStrategyOptions as opt}
+          <label class="flex items-center justify-center h-10 rounded-lg border text-sm font-semibold cursor-pointer transition-colors
+                        {ingestChunkStrategy === opt.value ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:border-primary/40 hover:text-foreground'}">
+            <input type="radio" class="sr-only" bind:group={ingestChunkStrategy} value={opt.value} />
+            {opt.label}
+          </label>
         {/each}
-        {#if documents.length === 0}
-          <tr>
-            <td colspan="5" class="px-4 py-8 text-center text-muted-foreground text-sm">
-              Belum ada dokumen.
-            </td>
-          </tr>
-        {/if}
-      </tbody>
-    </table>
+      </div>
+      <p class="text-xs text-muted-foreground mt-2">{chunkStrategyOptions.find(o => o.value === ingestChunkStrategy)?.desc}</p>
+    </fieldset>
+    {#if ingestError}<Alert>{ingestError}</Alert>{/if}
+  </form>
+  <svelte:fragment slot="footer">
+    <button type="button" class="btn-outline" disabled={ingestLoading} on:click={() => (showIngest = false)}>Cancel</button>
+    <button type="submit" form="ingest" class="btn-primary" disabled={ingestLoading}>
+      {#if ingestLoading}<Loader2 size={15} class="animate-spin" /> Processing…{:else}<Globe size={15} /> Fetch & index{/if}
+    </button>
+  </svelte:fragment>
+</Modal>
+
+<!-- Edit modal -->
+<Modal open={!!editing} title="Edit document" on:close={() => (editing = null)}>
+  <form id="edit-doc" on:submit|preventDefault={saveDoc} class="space-y-4">
+    <div>
+      <label for="edit-title" class="label">Title</label>
+      <input id="edit-title" bind:value={editTitle} class="input" required />
+    </div>
+    <div class="grid sm:grid-cols-2 gap-3">
+      <div>
+        <label for="edit-category" class="label">Category</label>
+        <input id="edit-category" bind:value={editCategory} class="input" list="doc-categories" />
+      </div>
+      <div>
+        <label for="edit-subcategory" class="label">Subcategory</label>
+        <input id="edit-subcategory" bind:value={editSubcategory} class="input" />
+      </div>
+    </div>
+    {#if editError}<Alert>{editError}</Alert>{/if}
+  </form>
+  <svelte:fragment slot="footer">
+    <button type="button" class="btn-outline" on:click={() => (editing = null)}>Cancel</button>
+    <button type="submit" form="edit-doc" class="btn-primary" disabled={savingDoc}>
+      {#if savingDoc}<Loader2 size={15} class="animate-spin" />{/if} Save
+    </button>
+  </svelte:fragment>
+</Modal>
+
+<datalist id="doc-categories">
+  {#each categories as c}<option value={c}></option>{/each}
+</datalist>
+
+<PageHeader title="Documents" description="{documents.length} documents · {totalChunks.toLocaleString('en')} chunks indexed">
+  <button on:click={refresh} class="btn-outline" disabled={loading}>
+    <RefreshCw size={15} class={loading ? 'animate-spin' : ''} /> <span class="hidden sm:inline">Refresh</span>
+  </button>
+  <button on:click={openIngest} class="btn-primary"><Globe size={15} /> Add from URL</button>
+</PageHeader>
+
+<div class="space-y-4">
+  {#if notice}<Alert variant="success" dismissible on:dismiss={() => (notice = '')}>{notice}</Alert>{/if}
+  {#if error}<Alert dismissible on:dismiss={() => (error = '')}>{error}</Alert>{/if}
+
+  <div class="flex flex-col sm:flex-row gap-3">
+    <div class="relative flex-1">
+      <Search size={15} class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+      <input bind:value={search} placeholder="Search title, URL or category…" class="input pl-9" aria-label="Search documents" />
+    </div>
+    <select bind:value={category} class="input sm:w-56" aria-label="Filter by category">
+      <option value="">All categories</option>
+      {#each categories as c}<option value={c}>{c}</option>{/each}
+    </select>
   </div>
-{/if}
+
+  {#if loading && documents.length === 0}
+    <LoadingState />
+  {:else if filtered.length === 0}
+    <div class="card">
+      <EmptyState icon={FileText} title={documents.length ? 'No matching documents' : 'No documents yet'}
+        description={documents.length ? 'Try a different search or category.' : 'Add a web page to start building the knowledge base.'} />
+    </div>
+  {:else}
+    <ul class="card divide-y overflow-hidden">
+      {#each filtered as doc (doc.document_id)}
+        {@const open = expandedDoc === doc.document_id}
+        <li>
+          <div class="flex items-start gap-3 p-4 hover:bg-muted/30 transition-colors">
+            <button on:click={() => toggleChunks(doc.document_id)} aria-expanded={open}
+              class="flex-1 min-w-0 flex items-start gap-3 text-left">
+              <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                <FileText size={17} />
+              </span>
+              <span class="flex-1 min-w-0">
+                <span class="block font-semibold text-sm leading-snug line-clamp-2">{doc.title || doc.document_id}</span>
+                <span class="flex flex-wrap items-center gap-1.5 mt-1.5">
+                  {#if doc.category}<span class="badge-primary">{doc.category}{doc.subcategory ? ` / ${doc.subcategory}` : ''}</span>{/if}
+                  <span class="badge-neutral"><Layers size={10} /> {doc.chunk_count ?? 0} chunks</span>
+                  {#if doc.source_url}<span class="text-xs text-muted-foreground truncate max-w-[16rem]">{hostname(doc.source_url) || doc.source_url}</span>{/if}
+                </span>
+              </span>
+              <ChevronDown size={16} class="shrink-0 mt-2 text-muted-foreground transition-transform {open ? 'rotate-180' : ''}" />
+            </button>
+            <div class="flex items-center shrink-0">
+              {#if doc.source_url}
+                <a href={doc.source_url} target="_blank" rel="noopener noreferrer" class="icon-btn hidden sm:inline-flex" title="Open source" aria-label="Open source"><ExternalLink size={15} /></a>
+              {/if}
+              <button on:click={() => startEdit(doc)} class="icon-btn" title="Edit" aria-label="Edit document"><Pencil size={15} /></button>
+              <button on:click={() => deleteDoc(doc)} class="icon-btn hover:!text-destructive hover:!bg-destructive/10" title="Delete" aria-label="Delete document"><Trash2 size={15} /></button>
+            </div>
+          </div>
+
+          {#if open}
+            <div class="px-4 pb-4 sm:pl-16" transition:slide={{ duration: 150 }}>
+              {#if chunksLoading[doc.document_id]}
+                <p class="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 size={14} class="animate-spin" /> Loading chunks…</p>
+              {:else if chunksError[doc.document_id]}
+                <Alert>{chunksError[doc.document_id]}</Alert>
+              {:else if (chunksByDoc[doc.document_id] ?? []).length === 0}
+                <p class="text-sm text-muted-foreground">No chunks.</p>
+              {:else}
+                <div class="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
+                  {#each chunksByDoc[doc.document_id] as chunk (chunk.id)}
+                    <div class="rounded-lg border bg-muted/30 p-3">
+                      <p class="text-[11px] font-mono text-muted-foreground mb-1">#{chunk.chunk_index} · id {chunk.id}</p>
+                      <p class="text-xs leading-relaxed line-clamp-5 whitespace-pre-wrap">{chunk.content}</p>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+</div>

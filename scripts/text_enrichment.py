@@ -253,12 +253,14 @@ def enrich_chunk(
     """
     Enrichment SETELAH chunking, tepat sebelum embedding.
 
-    for_embedding=True  → tambah breadcrumb + prefix E5
+    for_embedding=True  → tambah breadcrumb (konteks judul/bab) untuk embedding
     for_embedding=False → kembalikan teks bersih untuk disimpan ke DB
+
+    Catatan: prefix "passage: " (khusus model E5) sudah tidak dipakai karena
+    embedding sekarang memakai Gemini dengan taskType RETRIEVAL_DOCUMENT.
     """
     if for_embedding:
-        enriched = inject_breadcrumb(chunk_text, metadata, doc_title)
-        return f"passage: {enriched}"
+        return inject_breadcrumb(chunk_text, metadata, doc_title)
     return chunk_text
 
 
