@@ -27,8 +27,11 @@ const SKIP_RESPONSE_HEADERS = new Set([
   'set-cookie',
 ]);
 
-async function proxy(request: Request, path: string, search: string): Promise<Response> {
-  const url = `${BACKEND}/api/${path}${search}`;
+async function proxy(request: Request, url: URL): Promise<Response> {
+  // Use the path exactly as the browser sent it (still percent-encoded). The decoded
+  // route param turns an encoded id like "chapter7%2Fgap%2Findex" back into real
+  // slashes, which no backend route matches (404 with an empty body).
+  const target = `${BACKEND}${url.pathname}${url.search}`;
 
   const headers = new Headers();
   for (const h of REQUEST_HEADERS) {
@@ -40,7 +43,7 @@ async function proxy(request: Request, path: string, search: string): Promise<Re
     ? await request.arrayBuffer()
     : undefined;
 
-  const res = await fetch(url, {
+  const res = await fetch(target, {
     method: request.method,
     headers,
     body,
@@ -67,8 +70,7 @@ async function proxy(request: Request, path: string, search: string): Promise<Re
   });
 }
 
-const handler: RequestHandler = ({ request, params, url }) =>
-  proxy(request, params.path ?? '', url.search);
+const handler: RequestHandler = ({ request, url }) => proxy(request, url);
 
 export const GET = handler;
 export const POST = handler;
