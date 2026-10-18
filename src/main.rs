@@ -233,6 +233,8 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/chunks/{id}",              web::delete().to(handlers::admin_delete_chunk))
                     .route("/admin/chunks/{id}",              web::put().to(handlers::admin_update_chunk))
                     .route("/admin/logs",                web::get().to(handlers::admin_query_logs))
+                    .route("/admin/unanswered",          web::get().to(handlers::admin_unanswered))
+                    .route("/admin/unanswered/resolve",  web::post().to(handlers::admin_resolve_unanswered))
                     .route("/admin/faq/pins",            web::get().to(handlers::admin_faq_pins))
                     .route("/admin/faq/pins",            web::post().to(handlers::admin_faq_pin))
                     .route("/admin/faq/pins/{id}",       web::delete().to(handlers::admin_faq_unpin))

@@ -12,6 +12,7 @@
     id: number; query_text: string; detected_language: string;
     num_results: number; search_time_ms: number;
     user_id: number | null; session_id: string | null; created_at: string;
+    outcome?: string;
   }
 
   const PER_PAGE = 50;
@@ -68,6 +69,7 @@
             <td>
               <p class="leading-relaxed">{log.query_text}</p>
               <span class="text-[10px] uppercase tracking-wider text-muted-foreground">{log.detected_language}</span>
+              {#if log.outcome === 'not_found'}<span class="badge-warning ml-1">not in documents</span>{/if}
             </td>
             <td class="text-right"><span class={log.num_results === 0 ? 'badge-danger' : 'badge-success'}>{log.num_results}</span></td>
             <td class="text-right text-xs font-mono text-muted-foreground whitespace-nowrap">{log.search_time_ms} ms</td>
@@ -83,6 +85,7 @@
           <div class="flex flex-wrap items-center gap-1.5 mt-2 text-xs text-muted-foreground">
             <span class={log.num_results === 0 ? 'badge-danger' : 'badge-success'}>{log.num_results} results</span>
             <span class="badge-neutral uppercase">{log.detected_language}</span>
+            {#if log.outcome === 'not_found'}<span class="badge-warning">not in documents</span>{/if}
             <span>{log.search_time_ms} ms · {formatDateTime(log.created_at)}</span>
           </div>
         </li>

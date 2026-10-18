@@ -170,6 +170,11 @@ export const admin = {
       body: JSON.stringify({ content })
     }),
 
+  // Unanswered questions (from query logs)
+  unanswered: (days = 30, includeNoSources = false) =>
+    request<UnansweredQuestion[]>(`/admin/unanswered?days=${days}&include_no_sources=${includeNoSources}`),
+  resolveUnanswered: (ids: number[]) =>
+    request<{ resolved: number }>('/admin/unanswered/resolve', { method: 'POST', body: JSON.stringify({ ids }) }),
   // Query logs
   queryLogs: (limit = 50, offset = 0) =>
     request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?limit=${limit}&offset=${offset}`),
@@ -514,6 +519,16 @@ export interface AdminQueryLog {
   user_id: number | null;
   session_id: string | null;
   created_at: string;
+  /** answered | not_found | no_sources ('' = logged before outcomes existed) */
+  outcome?: '' | 'answered' | 'not_found' | 'no_sources';
+}
+export interface UnansweredQuestion {
+  query: string;
+  times: number;
+  not_found: number;
+  last_asked: string;
+  first_asked: string;
+  ids: number[];
 }
 
 // ── FAQ ──
