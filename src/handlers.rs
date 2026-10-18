@@ -1956,13 +1956,11 @@ pub async fn admin_resolve_unanswered(req: HttpRequest, state: web::Data<AppStat
 // ══════════════════════════════════════════════════════════════════
 
 /// Scrape URL, bagi jadi chunks, embed via Gemini, simpan ke DB
-// ─── Fetch HTML — fallback ke Chromium headless jika konten JS-heavy ───────────
-/// Coba reqwest dulu. Jika HTML hasil fetch mengandung penanda DataTables /
-/// JS-rendered table (tbody kosong, data-loaded via script), jalankan
-/// chromium-browser --headless --dump-dom untuk mendapat DOM yang sudah
-/// di-render JavaScript.
-async fn fetch_html_with_js(url: &str) -> Result<String, String> {
-    // 1. Reqwest biasa
+// ─── Fetch HTML ────────────────────────────────────────────────────────────────
+/// Download a page's HTML. JavaScript is not run (no headless browser: it does not fit in
+/// the free Render instance's memory). Tables whose rows are filled in by JavaScript are
+/// detected in `extract_page` and reported as a warning in the draft review instead.
+async fn fetch_html(url: &str) -> Result<String, String> {
     let http = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (compatible; PMPSTI-Bot/1.0)")
         .timeout(std::time::Duration::from_secs(30))
@@ -1975,91 +1973,7 @@ async fn fetch_html_with_js(url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("URL returned HTTP {} — page not ingested", resp.status().as_u16()));
     }
-    let html = resp.text().await
-        .map_err(|e| format!("Gagal baca konten: {e}"))?;
-
-    // 2. Deteksi apakah halaman perlu JS render:
-    //    - Ada DataTables / pakai script untuk load data tabel
-    //    - tbody kosong (< 200 karakter antara <tbody dan </tbody>)
-    //    - WordPress dengan konten dosen/pegawai (sering JS-rendered)
-    //    - wp-json / REST API WordPress
-    let lower_html = html.to_lowercase();
-    let needs_js = html.contains("DataTable")
-        || html.contains("datatables")
-        || html.contains("data-src=")
-        // WordPress detection
-        || lower_html.contains("wp-content")
-        || lower_html.contains("wp-json")
-        || lower_html.contains("wp-includes")
-        || lower_html.contains("wordpress")
-        // Lazy-load / AJAX data patterns
-        || lower_html.contains("ajax_url")
-        || lower_html.contains("data-ajax")
-        || lower_html.contains("data-url=")
-        || {
-            // Cek tbody kosong
-            if let Some(start) = lower_html.find("<tbody") {
-                if let Some(end) = lower_html[start..].find("</tbody>") {
-                    let inner = &html[start..start+end];
-                    inner.trim().len() < 300
-                } else { false }
-            } else { false }
-        };
-
-    if !needs_js {
-        return Ok(html);
-    }
-
-    // 3. Fallback: Playwright via Node.js
-    //    Menunggu tbody tr muncul (DataTables selesai load) — jauh lebih reliable
-    //    daripada --virtual-time-budget yang tidak menunggu network request.
-    let script = format!(
-        r#"
-const {{ chromium }} = require('playwright');
-(async () => {{
-  const browser = await chromium.launch({{ args: ['--no-sandbox','--disable-dev-shm-usage'] }});
-  const page = await browser.newPage();
-  await page.goto({url:?}, {{ waitUntil: 'networkidle', timeout: 30000 }});
-  // Tunggu sampai ada baris tabel atau timeout 15 detik
-  try {{ await page.waitForSelector('tbody tr', {{ timeout: 15000 }}); }} catch(_) {{}}
-  const html = await page.content();
-  await browser.close();
-  process.stdout.write(html);
-}})().catch(e => {{ process.stderr.write(String(e)); process.exit(1); }});
-"#,
-        url = url
-    );
-
-    // Tulis script ke file tmp — HARUS .js (CommonJS), bukan .mjs
-    let script_path = format!("/tmp/pw_render_{}.js", uuid::Uuid::new_v4());
-    if tokio::fs::write(&script_path, script.as_bytes()).await.is_err() {
-        return Ok(html); // fallback
-    }
-
-    let output = tokio::process::Command::new("node")
-        .arg(&script_path)
-        .output()
-        .await;
-
-    let _ = tokio::fs::remove_file(&script_path).await;
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let rendered = String::from_utf8_lossy(&o.stdout).to_string();
-            if rendered.len() > html.len() { Ok(rendered) } else { Ok(html) }
-        }
-        // Fall back to the plain HTML when node/Playwright is missing or fails, but say so:
-        // JavaScript-filled tables (e.g. staff lists) may then be incomplete.
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            log::warn!("[fetch] JS rendering failed for {url}, using plain HTML: {}", err.lines().next().unwrap_or(""));
-            Ok(html)
-        }
-        Err(e) => {
-            log::warn!("[fetch] JS rendering unavailable for {url} (node not found: {e}), using plain HTML");
-            Ok(html)
-        }
-    }
+    resp.text().await.map_err(|e| format!("Gagal baca konten: {e}"))
 }
 
 /// Where the main content usually lives, most specific first. Tried in this order.
@@ -2099,13 +2013,15 @@ fn extract_page(html: &str, url: &str, title_override: Option<String>) -> crate:
 
     // Tables: JSON widgets anywhere on the page (they hold every row) + HTML tables in the content
     let mut tables = reader::json_tables(&document);
+    // Rows loaded by JavaScript are not in the HTML; JSON widgets above already hold every row
+    let js_tables = tables.is_empty() && reader::js_filled_tables(&document);
     tables.extend(reader::html_tables(root));
 
     // The main text is the sections' text, so the length check and the preview warnings
     // look at exactly what gets chunked.
     let sections = reader::sections(root);
     let text = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
-    reader::PageContent { title, text, sections, tables }
+    reader::PageContent { title, text, sections, tables, js_tables }
 }
 
 /// Fetch a URL and turn it into a title and plain text (stages 1–3 of URL ingest).
@@ -2118,8 +2034,8 @@ async fn read_url(url: &str, title_override: Option<String>) -> Result<crate::re
         return Err(HttpResponse::BadRequest().json(ApiError::new(400, "URL tidak valid")));
     }
 
-    // 1. Fetch HTML (falls back to headless Chromium for JS-heavy pages)
-    let html = match fetch_html_with_js(&url).await {
+    // 1. Fetch HTML (JavaScript is not run; see fetch_html)
+    let html = match fetch_html(&url).await {
         Ok(h) => h,
         Err(e) => return Err(HttpResponse::BadGateway().json(ApiError::new(502, e))),
     };
@@ -2217,7 +2133,7 @@ pub(crate) struct WebPageChunks {
 }
 
 pub(crate) async fn read_and_chunk_page(url: &str) -> Result<WebPageChunks, String> {
-    let html = fetch_html_with_js(url).await?;
+    let html = fetch_html(url).await?;
     let page = extract_page(&html, url, None);
     if page.text.len() < 50 && page.tables.is_empty() {
         return Err("Konten terlalu pendek atau tidak bisa di-parse".into());
@@ -2362,7 +2278,7 @@ pub async fn admin_ingest_url(
     }
 }
 
-/// Ingest plain text content directly (no URL fetching / Playwright needed).
+/// Ingest plain text content directly (no URL fetching).
 pub async fn admin_ingest_text(
     req:   HttpRequest,
     state: web::Data<AppState>,
@@ -2519,8 +2435,11 @@ mod tests {
 
     #[test]
     fn saved_pages_have_no_quality_warnings() {
+        // The jteti staff page (WordPress) has its rows in the HTML: no JavaScript needed
+        assert!(!extract_page(TENAGA_PENDIDIK, "https://jteti.ugm.ac.id/tenaga-pendidik/", None).js_tables);
         for (name, html) in [("introduction", INTRODUCTION), ("d_tendik", D_TENDIK)] {
             let page = extract_page(html, "https://example.org/", None);
+            assert!(!page.js_tables, "{name}");
             let warnings = crate::reader::quality_warnings(&page, &offline_chunks(&page), super::chunk_max_chars());
             assert!(warnings.is_empty(), "{name}: {warnings:?}");
         }

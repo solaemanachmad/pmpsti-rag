@@ -33,33 +33,12 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Dependencies untuk Chromium yang di-download Playwright
-RUN apt-get update && apt-get install -y \
+# Only TLS certificates and OpenSSL are needed: pages are read as plain HTML (no headless
+# browser — Chromium does not fit in the free Render instance's 512 MB).
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
-    fonts-liberation \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2t64 \
-    libxshmfence1 \
-    libdrm2 \
-    libxext6 \
-    libxfixes3 \
-    libxcb1 \
-    libx11-6 \
-    nodejs \
-    npm \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Playwright dan download Chromium-nya sendiri
-RUN npm install -g playwright@1.49.0 && \
-    playwright install chromium
 
 WORKDIR /app
 COPY --from=builder /app/target/release/pmpsti ./pmpsti
