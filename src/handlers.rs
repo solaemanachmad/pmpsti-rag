@@ -108,6 +108,96 @@ async fn embed_with_retry(
     Err("Embed failed after max retries".to_string())
 }
 
+// ── Document embeddings: one recipe, batched ───────────────────────────────
+const BATCH_EMBED_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents";
+
+/// The text embedded for a stored chunk: the document title, a blank line, the content.
+/// The SAME recipe as `document_text` in scripts/gemini_embed.py (used by ingest.py and
+/// regen_embeddings.py), so re-embedding a database reproduces what ingest stored.
+/// The title is also sent as Gemini's `title` field (RETRIEVAL_DOCUMENT only).
+fn document_embed_text(title: &str, content: &str) -> String {
+    if title.is_empty() { content.to_string() } else { format!("{title}\n\n{content}") }
+}
+
+/// Embed a document's chunks with `batchEmbedContents`, `EMBED_BATCH_SIZE` (default 50) per
+/// request — one call instead of one per chunk, which kept long pages past the proxy's
+/// 60 s limit. Retries 429/503 with backoff. A batch that still fails gets empty vectors:
+/// its chunks are saved without embeddings (still found by keyword search) and can be
+/// filled later with `scripts/regen_embeddings.py`, which uses the same recipe.
+async fn embed_documents(http: &reqwest::Client, gemini_key: &str, title: &str, chunks: &[String]) -> Vec<Vec<f32>> {
+    #[derive(serde::Deserialize)]
+    struct BatchResp { embeddings: Vec<Vals> }
+    #[derive(serde::Deserialize)]
+    struct Vals { values: Vec<f32> }
+
+    let batch_size: usize = std::env::var("EMBED_BATCH_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(50).max(1);
+    let batch_delay_ms: u64 = std::env::var("EMBED_BATCH_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+    let mut out: Vec<Vec<f32>> = Vec::with_capacity(chunks.len());
+
+    for (b, batch) in chunks.chunks(batch_size).enumerate() {
+        if b > 0 && batch_delay_ms > 0 {
+            sleep(std::time::Duration::from_millis(batch_delay_ms)).await;
+        }
+        let requests: Vec<serde_json::Value> = batch.iter().map(|c| {
+            let mut r = serde_json::json!({
+                "model": "models/gemini-embedding-001",
+                "content": { "parts": [{ "text": document_embed_text(title, c) }] },
+                "taskType": "RETRIEVAL_DOCUMENT",
+                "outputDimensionality": 768,
+            });
+            if !title.is_empty() {
+                r["title"] = serde_json::json!(title);
+            }
+            r
+        }).collect();
+        let body = serde_json::json!({ "requests": requests });
+
+        let mut vectors: Option<Vec<Vec<f32>>> = None;
+        for attempt in 0..=4u32 {
+            let resp = http.post(BATCH_EMBED_URL).header("x-goog-api-key", gemini_key).json(&body).send().await;
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    match r.json::<BatchResp>().await {
+                        Ok(d) if d.embeddings.len() == batch.len() => {
+                            vectors = Some(d.embeddings.into_iter().map(|e| e.values).collect());
+                        }
+                        Ok(d) => eprintln!("[embed] batch {b}: {} vectors for {} chunks", d.embeddings.len(), batch.len()),
+                        Err(e) => eprintln!("[embed] batch {b}: bad response: {e}"),
+                    }
+                    break;
+                }
+                Ok(r) if matches!(r.status().as_u16(), 429 | 503) && attempt < 4 => {
+                    let backoff = 2000u64 << attempt; // 2, 4, 8, 16 s
+                    eprintln!("[embed] batch {b}: Gemini {}, retry {}/4 after {backoff} ms", r.status(), attempt + 1);
+                    sleep(std::time::Duration::from_millis(backoff)).await;
+                }
+                Ok(r) => {
+                    let status = r.status();
+                    eprintln!("[embed] batch {b}: Gemini {status}: {}", r.text().await.unwrap_or_default().chars().take(300).collect::<String>());
+                    break;
+                }
+                Err(e) if attempt < 4 => {
+                    eprintln!("[embed] batch {b}: network error {e}, retrying");
+                    sleep(std::time::Duration::from_millis(1000 << attempt)).await;
+                }
+                Err(e) => {
+                    eprintln!("[embed] batch {b}: network error {e}");
+                    break;
+                }
+            }
+        }
+        match vectors {
+            Some(v) => out.extend(v),
+            None => {
+                eprintln!("[embed] batch {b}: saving {} chunks without embeddings", batch.len());
+                out.extend(std::iter::repeat_with(Vec::new).take(batch.len()));
+            }
+        }
+    }
+    out
+}
+
 // ── Chunking config (tune via env or change constants here) ────────────────
 /// Similarity threshold: kalimat dengan cosine similarity < nilai ini → split baru.
 /// Turunkan (e.g. 0.65) untuk chunk lebih kecil/granular,
@@ -2068,19 +2158,11 @@ pub async fn admin_ingest_url(
     let subcategory = body.subcategory.clone().unwrap_or_else(|| "—".to_string());
     let document_id = format!("url-{}", uuid::Uuid::new_v4());
 
+    // 4. Embed all chunks (batched; failed batches are saved without embeddings)
+    let embeddings = embed_documents(&http, &gemini_key, &title, &chunks_text).await;
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
-    for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, EMBED_URL, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
-            Ok(v)  => v,
-            Err(e) => {
-                // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.
-                // Chunk tetap bisa dicari via fulltext search.
-                eprintln!("[ingest-url] Embed chunk {i} gagal ({}), simpan tanpa embedding", e);
-                vec![]
-            }
-        };
-
+    for (i, (chunk_text, embedding)) in chunks_text.iter().zip(embeddings).enumerate() {
         doc_chunks.push(DocumentChunk {
             document_id:   document_id.clone(),
             title:         title.clone(),
@@ -2145,19 +2227,11 @@ pub async fn admin_ingest_text(
     let subcategory= body.subcategory.clone().unwrap_or_else(|| "—".to_string());
     let document_id= format!("text-{}", uuid::Uuid::new_v4());
 
+    // Embed all chunks (batched, same recipe as URL ingest)
+    let embeddings = embed_documents(&http, &gemini_key, &title, &chunks_text).await;
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
-    for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, EMBED_URL, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
-            Ok(v)  => v,
-            Err(e) => {
-                // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.
-                // Chunk tetap bisa dicari via fulltext search.
-                eprintln!("[ingest-text] Embed chunk {i} gagal ({}), simpan tanpa embedding", e);
-                vec![]
-            }
-        };
-
+    for (i, (chunk_text, embedding)) in chunks_text.iter().zip(embeddings).enumerate() {
         doc_chunks.push(DocumentChunk {
             document_id:   document_id.clone(),
             title:         title.clone(),
@@ -2276,6 +2350,13 @@ mod tests {
             let warnings = crate::reader::quality_warnings(&page, &offline_chunks(&page), super::chunk_max_chars());
             assert!(warnings.is_empty(), "{name}: {warnings:?}");
         }
+    }
+
+    #[test]
+    fn embed_text_is_title_blank_line_content() {
+        // Must match document_text() in scripts/gemini_embed.py
+        assert_eq!(super::document_embed_text("Beban Dosen", "Nama: X"), "Beban Dosen\n\nNama: X");
+        assert_eq!(super::document_embed_text("", "Nama: X"), "Nama: X");
     }
 
     #[test]

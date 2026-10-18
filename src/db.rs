@@ -1636,40 +1636,46 @@ impl Database {
     //  DOCUMENT INGEST — insert chunks dengan embedding
     // ════════════════════════════════════════════════════════════
 
+    /// Save a document's chunks with ONE multi-row INSERT (batches of 1,000 rows, inside
+    /// one transaction). Row-by-row inserts cost a network round trip each — ~25 s for a
+    /// 39-chunk page from a laptop to Neon — and could leave a half-saved document.
     pub async fn insert_document_chunks(&self, chunks: &[DocumentChunk]) -> Result<usize, String> {
-        let mut inserted = 0usize;
-        for chunk in chunks {
-            // Kalau embedding kosong (mis. quota Gemini habis), simpan NULL agar
-            // pgvector tidak error. Chunk tetap bisa dicari via fulltext search.
-            let vec: Option<pgvector::Vector> = if chunk.embedding.is_empty() {
-                None
-            } else {
-                Some(pgvector::Vector::from(chunk.embedding.clone()))
-            };
-            sqlx::query(
+        let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
+        for batch in chunks.chunks(1_000) { // 9 parameters per row; Postgres allows 65,535
+            let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
                 "INSERT INTO documents
                     (document_id, title, content, source_url, category, subcategory,
-                     document_type, chunk_index, embedding, created_at, updated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
-                 ON CONFLICT (document_id, chunk_index) DO UPDATE
-                 SET content=EXCLUDED.content, embedding=EXCLUDED.embedding,
-                     title=EXCLUDED.title, updated_at=NOW()"
-            )
-            .bind(&chunk.document_id)
-            .bind(&chunk.title)
-            .bind(&chunk.content)
-            .bind(&chunk.source_url)
-            .bind(&chunk.category)
-            .bind(&chunk.subcategory)
-            .bind(&chunk.document_type)
-            .bind(chunk.chunk_index)
-            .bind(vec)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            inserted += 1;
+                     document_type, chunk_index, embedding, created_at, updated_at) ",
+            );
+            qb.push_values(batch, |mut row, chunk| {
+                // Empty embedding (e.g. Gemini quota used up) is stored as NULL, so pgvector
+                // accepts the row; the chunk is still found by keyword search.
+                let vec: Option<pgvector::Vector> = if chunk.embedding.is_empty() {
+                    None
+                } else {
+                    Some(pgvector::Vector::from(chunk.embedding.clone()))
+                };
+                row.push_bind(&chunk.document_id)
+                    .push_bind(&chunk.title)
+                    .push_bind(&chunk.content)
+                    .push_bind(&chunk.source_url)
+                    .push_bind(&chunk.category)
+                    .push_bind(&chunk.subcategory)
+                    .push_bind(&chunk.document_type)
+                    .push_bind(chunk.chunk_index)
+                    .push_bind(vec)
+                    .push("NOW()")
+                    .push("NOW()");
+            });
+            qb.push(
+                " ON CONFLICT (document_id, chunk_index) DO UPDATE
+                  SET content=EXCLUDED.content, embedding=EXCLUDED.embedding,
+                      title=EXCLUDED.title, updated_at=NOW()",
+            );
+            qb.build().execute(&mut *tx).await.map_err(|e| e.to_string())?;
         }
-        Ok(inserted)
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(chunks.len())
     }
 
     pub async fn admin_list_documents(&self) -> Result<Vec<AdminDocument>, String> {

@@ -45,6 +45,16 @@ def _load_dotenv():
 _load_dotenv()
 
 
+def document_text(title: str, content: str) -> str:
+    """The text embedded for a stored chunk: title, a blank line, the content.
+
+    The SAME recipe as document_embed_text in src/handlers.rs (Rust URL ingest), used by
+    ingest.py and regen_embeddings.py, so every path produces the same vector for the same
+    chunk. Pass the title as Gemini's `title` too (embed(..., titles=[...])).
+    """
+    return f"{title}\n\n{content}" if title else content
+
+
 class GeminiEmbeddings:
     def __init__(self, api_key: str | None = None, task_type: str = "RETRIEVAL_DOCUMENT"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")

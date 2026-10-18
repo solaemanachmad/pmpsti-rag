@@ -25,7 +25,7 @@ import sys
 
 import psycopg2
 
-from gemini_embed import GeminiEmbeddings  # juga memuat .env
+from gemini_embed import GeminiEmbeddings, document_text  # also loads .env
 
 CHUNK = 50  # baris per commit
 
@@ -70,8 +70,8 @@ def main() -> None:
         batch = rows[i:i + CHUNK]
         ids = [r[0] for r in batch]
         titles = [r[1] for r in batch]
-        # Judul ikut dimasukkan ke teks supaya konteks dokumen ikut ter-embed
-        texts = [f"{r[1]}\n\n{r[2]}" if r[1] else r[2] for r in batch]
+        # Same recipe as ingest (Rust and ingest.py): title + blank line + content
+        texts = [document_text(r[1], r[2]) for r in batch]
 
         vecs = model.embed(texts, "RETRIEVAL_DOCUMENT", titles=titles)
 
