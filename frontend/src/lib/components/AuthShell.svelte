@@ -17,15 +17,15 @@
     <a href="/" class="relative"><Logo onDark /></a>
     <div class="relative max-w-md">
       <h2 class="text-3xl xl:text-4xl font-extrabold tracking-tight leading-tight">
-        Your PMPSTI questions, <span class="text-accent">answered from official documents.</span>
+        Your DTETI questions, <span class="text-accent">answered from official documents.</span>
       </h2>
       <ul class="mt-8 space-y-4 text-sm text-sidebar-muted">
-        <li class="flex gap-3"><BookOpenCheck size={18} class="text-accent shrink-0" /> Grounded in published UGM regulations and guides</li>
+        <li class="flex gap-3"><BookOpenCheck size={18} class="text-accent shrink-0" /> Grounded in published DTETI regulations and guides</li>
         <li class="flex gap-3"><Quote size={18} class="text-accent shrink-0" /> Every answer cites the documents it used</li>
         <li class="flex gap-3"><Clock3 size={18} class="text-accent shrink-0" /> Available any time, with your chat history saved</li>
       </ul>
     </div>
-    <p class="relative text-xs text-sidebar-muted">Universitas Gadjah Mada · DTETI</p>
+    <p class="relative text-xs text-sidebar-muted">DTETI · Universitas Gadjah Mada</p>
   </aside>
 
   <!-- Form -->

@@ -283,7 +283,7 @@ create branch → commit → push → open PR → test Preview → merge into ma
    ```
 3. **Open a pull request** into `main` on GitHub (the *Compare & pull request* button).
 4. **Test the Preview.** Vercel builds a Preview URL for the branch and links it in the PR. Check it on both phone and laptop.
-5. **Merge into `main`**: *Merge pull request* → *Confirm merge*. Vercel deploys to Production automatically.
+5. **Merge into `main`**: *Merge pull request* → *Confirm merge*. Vercel deploys to Production automatically. Once the deploy is live, run the [smoke check](#smoke-check-the-live-site).
 6. **Delete the branch**: click *Delete branch* on the PR, then clean up locally:
    ```bash
    git switch main && git pull
@@ -363,6 +363,24 @@ SELECT id, title, updated_at FROM chat_sessions ORDER BY updated_at DESC LIMIT 1
 SELECT COUNT(*) FROM chunks;
 ```
 
+### Smoke check the live site
+
+`scripts/smoke_check.py` logs in through the frontend's `/api` proxy, calls `/api/auth/me` with the returned `auth_token` cookie, and checks that a document id containing `%2F` still reaches its backend route. It is read-only and needs only the Python standard library. Run it after every Production deploy, or against a Preview URL before merging:
+
+```bash
+cd scripts
+python smoke_check.py                                       # https://pmpsti-rag.vercel.app
+python smoke_check.py --base-url https://<preview>.vercel.app
+```
+
+Put a real account's credentials in `SMOKE_EMAIL` / `SMOKE_PASSWORD` (environment or root `.env`; never commit them). Five failed logins lock the login for 15 minutes, so fix wrong credentials before retrying. A failing check means:
+
+| Check | Failure | Likely cause |
+|---|---|---|
+| `login` | no `auth_token` cookie | the proxy dropped `Set-Cookie`, or the frontend calls the backend directly instead of `/api` |
+| `auth/me` | 401 "Token tidak ditemukan" | the cookie is not sent back (third-party cookie, e.g. `PUBLIC_API_URL` pointing at Render) |
+| `encoded id route` | empty 404 | the proxy decoded `%2F` into `/` (deleting documents like `appendix/f_org` fails) |
+
 ### Reset a user's password
 
 Passwords are hashed with Argon2, so they cannot be changed directly in psql. Use **Forgot password** on the sign-in page (requires email to be configured), or set `ADMIN_EMAIL` / `ADMIN_PASSWORD` for the admin account and restart the backend.
@@ -402,6 +420,7 @@ pmpsti-rag/
 │   ├── gemini_embed.py      # Gemini embedding helper (shared by scripts)
 │   ├── regen_embeddings.py  # Re-embed documents
 │   ├── copy_embeddings.py   # Copy embeddings between databases
+│   ├── smoke_check.py       # Live login + /api proxy check
 │   └── requirements.txt
 ├── docs/                    # Documents to ingest
 ├── .env                     # Configuration (not committed)
