@@ -294,7 +294,7 @@
         <textarea id="src-links" bind:value={linksText} rows="4" required class="input font-mono text-xs"
           placeholder={'One link per line, for example:\nhttps://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html\nhttps://drive.google.com/drive/folders/…\nhttps://jteti.ugm.ac.id/…/panduan.pdf'}></textarea>
         <ul class="text-xs text-muted-foreground mt-2 space-y-1 list-disc pl-4">
-          <li><strong>Web pages</strong>: add only the pages you want. If they belong to a site (such as the PMPSTI guidebook), they are grouped under it.</li>
+          <li><strong>Web pages</strong>: add only the pages you want. If they belong to a site, they are grouped under it.</li>
           <li><strong>PDFs</strong>: a link that opens the .pdf file, or a Google Drive file/folder shared as <strong>Anyone with the link can view</strong>.</li>
         </ul>
       </div>

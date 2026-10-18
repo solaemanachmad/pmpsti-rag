@@ -3,7 +3,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import {
-    Plus, Pencil, Trash2, Check, X, LogOut, UserRound, Moon, Sun, ChevronsUpDown, ShieldCheck
+    Plus, Pencil, Trash2, Check, X, LogOut, UserRound, Moon, Sun, ChevronsUpDown, ShieldCheck, PanelLeftClose
   } from 'lucide-svelte';
   import Logo from './Logo.svelte';
   import { currentUser } from '$lib/stores/auth';
@@ -12,8 +12,10 @@
   import { mainNav, adminNav, isNavActive as isActive } from '$lib/nav';
 
   export let showClose = false;
+  /** desktop: show a button that hides the sidebar */
+  export let showCollapse = false;
 
-  const dispatch = createEventDispatcher<{ navigate: void; close: void; logout: void }>();
+  const dispatch = createEventDispatcher<{ navigate: void; close: void; logout: void; collapse: void }>();
 
   $: path = $page.url.pathname;
   $: isAdmin = $currentUser?.role === 'admin';
@@ -68,6 +70,11 @@
       <button class="w-9 h-9 rounded-lg flex items-center justify-center text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-foreground"
         on:click={() => dispatch('close')} aria-label="Close menu">
         <X size={18} />
+      </button>
+    {:else if showCollapse}
+      <button class="w-9 h-9 rounded-lg flex items-center justify-center text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-foreground"
+        on:click={() => dispatch('collapse')} aria-label="Hide sidebar" title="Hide sidebar">
+        <PanelLeftClose size={18} />
       </button>
     {/if}
   </div>

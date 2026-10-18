@@ -3,6 +3,7 @@
   import type { SourceRef } from '$lib/api/client';
   import SourceList from './SourceList.svelte';
   import Alert from '../ui/Alert.svelte';
+  import { GraduationCap } from 'lucide-svelte';
 
   interface Message {
     role: 'user' | 'assistant';
@@ -15,7 +16,7 @@
   export let isStreaming = false;
   export let error = '';
 
-  const avatar = 'w-8 h-8 rounded-full bg-secondary dark:bg-sidebar border border-sidebar-border flex items-center justify-center shrink-0 p-1.5';
+  const avatar = 'w-9 h-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center shrink-0 shadow-sm';
 </script>
 
 <div class="space-y-7">
@@ -29,7 +30,7 @@
       </div>
     {:else}
       <div class="flex gap-3">
-        <div class={avatar}><img src="/ugm-logo-white.png" alt="" class="w-full h-full object-contain" /></div>
+        <div class={avatar} aria-hidden="true"><GraduationCap size={20} /></div>
         <div class="flex-1 min-w-0 pt-0.5">
           <div class="prose-chat text-[15px] leading-relaxed">{@html renderMarkdown(msg.content)}</div>
           {#if msg.sources?.length}
@@ -42,7 +43,7 @@
 
   {#if isStreaming || streamingText}
     <div class="flex gap-3">
-      <div class={avatar}><img src="/ugm-logo-white.png" alt="" class="w-full h-full object-contain" /></div>
+      <div class={avatar} aria-hidden="true"><GraduationCap size={20} /></div>
       <div class="flex-1 min-w-0 pt-0.5">
         {#if streamingText}
           <div class="prose-chat text-[15px] leading-relaxed">

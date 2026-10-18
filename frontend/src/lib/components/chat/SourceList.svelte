@@ -16,7 +16,8 @@
     <ChevronDown size={12} class="transition-transform group-open:rotate-180" />
   </summary>
 
-  <ol class="mt-2 grid gap-2 sm:grid-cols-2">
+  <!-- One compact line per source: number, title, where it is. The snippet shows on hover. -->
+  <ol class="mt-2 max-w-xl rounded-lg border bg-card divide-y overflow-hidden">
     {#each sources as src, i}
       {@const hasUrl = src.source_url?.startsWith('http')}
       {@const domain = hostname(src.source_url)}
@@ -26,28 +27,25 @@
           href={hasUrl ? src.source_url : undefined}
           target={hasUrl ? '_blank' : undefined}
           rel={hasUrl ? 'noopener noreferrer' : undefined}
-          class="group/src flex items-start gap-2.5 h-full p-3 rounded-lg border bg-card
-                 {hasUrl ? 'hover:border-primary/40 hover:bg-primary/5' : ''} transition-colors"
+          title={src.snippet || undefined}
+          class="group/src flex items-center gap-2.5 px-3 py-2 text-xs
+                 {hasUrl ? 'hover:bg-primary/5' : ''} transition-colors"
         >
-          <span class="shrink-0 w-5 h-5 rounded-md bg-primary/10 text-primary text-[10px] font-bold flex items-center justify-center mt-0.5">
+          <span class="shrink-0 w-5 h-5 rounded-md bg-primary/10 text-primary text-[10px] font-bold flex items-center justify-center">
             {i + 1}
           </span>
-          <span class="flex-1 min-w-0">
-            <span class="flex items-start justify-between gap-2">
-              <span class="text-xs font-semibold line-clamp-2 leading-snug">{src.title || domain || 'Document'}</span>
-              {#if hasUrl}
-                <ExternalLink size={11} class="shrink-0 mt-0.5 text-muted-foreground group-hover/src:text-primary" />
-              {/if}
-            </span>
-            {#if src.snippet}
-              <span class="block text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{src.snippet}</span>
-            {/if}
-            {#if src.category || domain || src.pages?.length}
-              <span class="block text-[10px] text-muted-foreground/80 mt-1 truncate">
-                {[src.pages?.length ? `p. ${formatPages(src.pages)}` : '', src.category, domain].filter(Boolean).join(' · ')}
-              </span>
-            {/if}
+          <span class="flex-1 min-w-0 truncate font-medium {hasUrl ? 'group-hover/src:text-primary' : ''}">
+            {src.title || domain || 'Document'}
           </span>
+          {#if src.pages?.length}
+            <span class="shrink-0 text-[11px] text-muted-foreground">p. {formatPages(src.pages)}</span>
+          {/if}
+          {#if domain}
+            <span class="hidden sm:block shrink-0 max-w-[35%] truncate text-[11px] text-muted-foreground">{domain}</span>
+          {/if}
+          {#if hasUrl}
+            <ExternalLink size={12} class="shrink-0 text-muted-foreground group-hover/src:text-primary" />
+          {/if}
         </svelte:element>
       </li>
     {/each}

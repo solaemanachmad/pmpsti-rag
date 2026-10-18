@@ -10,7 +10,7 @@
   import { errorMessage } from '$lib/format';
   import MessageList from '$lib/components/chat/MessageList.svelte';
   import Composer from '$lib/components/chat/Composer.svelte';
-  import { Sparkles } from 'lucide-svelte';
+  import { Sparkles, GraduationCap } from 'lucide-svelte';
 
   let messages: ChatMessage[] = [];
   let streamingText = '';
@@ -125,8 +125,8 @@
         </div>
       {:else if isEmpty}
         <div class="h-full flex flex-col items-center justify-center text-center">
-          <div class="w-14 h-14 rounded-2xl bg-secondary dark:bg-sidebar flex items-center justify-center p-3 mb-5 shadow-soft">
-            <img src="/ugm-logo-white.png" alt="" class="w-full h-full object-contain" />
+          <div class="w-14 h-14 rounded-2xl bg-primary text-primary-foreground flex items-center justify-center mb-5 shadow-soft" aria-hidden="true">
+            <GraduationCap size={30} />
           </div>
           <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight">
             {firstName ? `Hi ${firstName}, what` : 'What'} would you like to know?
