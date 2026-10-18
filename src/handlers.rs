@@ -1971,7 +1971,11 @@ fn extract_page(html: &str, url: &str, title_override: Option<String>) -> crate:
     let mut tables = reader::json_tables(&document);
     tables.extend(reader::html_tables(root));
 
-    reader::PageContent { title, text: reader::visible_text(root), sections: reader::sections(root), tables }
+    // The main text is the sections' text, so the length check and the preview warnings
+    // look at exactly what gets chunked.
+    let sections = reader::sections(root);
+    let text = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
+    reader::PageContent { title, text, sections, tables }
 }
 
 /// Fetch a URL and turn it into a title and plain text (stages 1–3 of URL ingest).

@@ -41,11 +41,25 @@ pub struct PageContent {
     pub tables: Vec<PageTable>,
 }
 
-/// Elements whose text is never part of the main text: page chrome, code, and tables
-/// (tables are read separately by `json_tables` / `html_tables`).
+/// Elements whose text is never part of the main text: page chrome, code, form controls
+/// (e.g. Quarto's listing sort menu), and tables (read separately by `json_tables` /
+/// `html_tables`). SVG is handled by `svg_lines`.
 const SKIP_TEXT_IN: &[&str] = &[
     "script", "style", "noscript", "template", "nav", "header", "footer", "aside", "button", "table",
+    "select", "svg",
 ];
+
+/// Text of a diagram (Graphviz SVG, as used for flowcharts in the guidebook): one line per
+/// box or arrow label, its labels joined ("Buka simaster.ugm.ac.id"). The diagram's
+/// internal ids and edge names (`<title>Mulai->Buka</title>`) are left out.
+fn svg_lines(svg: ElementRef) -> Vec<String> {
+    let group_sel = Selector::parse("g.node, g.edge").unwrap();
+    let text_sel = Selector::parse("text").unwrap();
+    svg.select(&group_sel)
+        .map(|g| collapse(&g.select(&text_sel).flat_map(|t| t.text()).collect::<Vec<_>>().join(" ")))
+        .filter(|line| !line.is_empty())
+        .collect()
+}
 
 fn collapse(s: &str) -> String {
     s.replace('\u{a0}', " ").split_whitespace().collect::<Vec<_>>().join(" ")
@@ -55,28 +69,6 @@ fn collapse(s: &str) -> String {
 pub fn html_to_text(fragment: &str) -> String {
     let doc = Html::parse_fragment(fragment);
     collapse(&doc.root_element().text().collect::<Vec<_>>().join(" "))
-}
-
-/// Visible text of `root`, skipping `SKIP_TEXT_IN` elements. Non-breaking spaces become
-/// normal spaces (so "Tabel&nbsp;D.1" matches "Tabel D.1"); blank lines are dropped.
-pub fn visible_text(root: ElementRef) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for node in root.descendants() {
-        let Node::Text(text) = node.value() else { continue };
-        let hidden = node.ancestors()
-            .filter_map(ElementRef::wrap)
-            .any(|el| SKIP_TEXT_IN.contains(&el.value().name()));
-        if !hidden {
-            parts.push(text.to_string());
-        }
-    }
-    parts.join("\n")
-        .replace('\u{a0}', " ")
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Headings that start a new section, with their level. `h4`–`h6` are usually short labels
@@ -94,7 +86,7 @@ fn section_level(tag: &str) -> Option<usize> {
     }
 }
 
-/// The visible text of `root` (same rules as `visible_text`) split into sections at
+/// The visible text of `root` (skipping `SKIP_TEXT_IN` elements) split into sections at
 /// `h1`–`h3`, each with its heading path. Lets every chunk say where it comes from, so
 /// "Visi" of the study programme is not confused with "Visi" of the faculty.
 ///
@@ -137,6 +129,10 @@ pub fn sections(root: ElementRef) -> Vec<Section> {
                         let heading = collapse(&child_el.text().collect::<Vec<_>>().join(" "));
                         if !heading.is_empty() {
                             path.push((level, heading));
+                        }
+                    } else if tag == "svg" {
+                        if !headings_only {
+                            lines.extend(svg_lines(child_el));
                         }
                     } else if !NO_HEADINGS_IN.contains(&tag) {
                         let skip = headings_only || SKIP_TEXT_IN.contains(&tag);
@@ -579,6 +575,20 @@ mod tests {
     }
 
     #[test]
+    fn diagrams_and_form_controls_are_read_cleanly() {
+        let doc = Html::parse_document(r#"<body><main>
+            <p>Langkah:</p>
+            <select><option>Urut berdasar</option><option>Judul</option></select>
+            <svg><g class="graph"><title>SIMASTER</title>
+              <g class="node"><title>Buka</title><text>Buka</text><text>simaster.ugm.ac.id</text></g>
+              <g class="edge"><title>Mulai->Buka</title></g>
+              <g class="edge"><title>Dec->Tanggung</title><text>TIDAK</text></g>
+            </g></svg></main></body>"#);
+        let main = doc.select(&Selector::parse("main").unwrap()).next().unwrap();
+        assert_eq!(sections(main)[0].text, "Langkah:\nBuka simaster.ugm.ac.id\nTIDAK");
+    }
+
+    #[test]
     fn sections_without_headings_is_one_section() {
         let doc = Html::parse_document("<body><main><p>Hello</p><p>world</p><script>x()</script></main></body>");
         let main = doc.select(&Selector::parse("main").unwrap()).next().unwrap();
@@ -586,13 +596,13 @@ mod tests {
     }
 
     #[test]
-    fn visible_text_skips_scripts_and_tables() {
+    fn text_skips_scripts_tables_and_chrome() {
         let doc = Html::parse_document(
             "<body><main><p>Hello&nbsp;world</p><script>var x = 1;</script>\
              <table><tr><td>cell</td></tr></table><nav>menu</nav></main></body>",
         );
         let main = doc.select(&Selector::parse("main").unwrap()).next().unwrap();
-        assert_eq!(visible_text(main), "Hello world");
+        assert_eq!(sections(main)[0].text, "Hello world");
     }
 }
 
