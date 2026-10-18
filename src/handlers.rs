@@ -866,10 +866,6 @@ pub async fn update_password(
 //  FILTER SOURCES — dynamic relevance filtering
 // ══════════════════════════════════════════════════════════════════
 
-/// Minimum score for a source chunk. Hybrid top-1 scores on the test set are 0.41–0.60
-/// (median 0.55), so 0.35 never drops a correct answer (see scripts/eval_retrieval.py).
-const MIN_SOURCE_SCORE: f64 = 0.35;
-
 /// Pick the search hits that are good enough to use as context (still per chunk;
 /// `RagEngine::build_context` then merges them per document = per source card).
 ///
@@ -959,7 +955,8 @@ pub async fn ask(
 
     // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
     let search_mode = body.search_mode.as_deref().unwrap_or("hybrid");
-    let top_k       = body.top_k.unwrap_or(10); // fetch lebih banyak, filter di filter_sources
+    let tuning      = crate::settings::get(); // Admin → Settings
+    let top_k       = body.top_k.unwrap_or(tuning.candidates); // fetch more, filter in filter_sources
     let cat_filter  = body.category_filter.as_deref();
 
     let start = std::time::Instant::now();
@@ -978,7 +975,7 @@ pub async fn ask(
 
     // 2. Filter → merge per document + add surrounding context.
     //    One entry = one source card = number [n] in the answer.
-    let hits     = filter_sources(&all_chunks, &body.query, MIN_SOURCE_SCORE, 0.25, 6);
+    let hits     = filter_sources(&all_chunks, &body.query, tuning.min_score, 0.25, tuning.max_sources);
     let contexts = state.rag.build_context(&body.query, &hits).await;
     let relevant: Vec<&crate::db::SearchResult> = contexts.iter().collect();
 
@@ -1096,7 +1093,8 @@ pub async fn ask_public(
 
     // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
     let search_mode = body.search_mode.as_deref().unwrap_or("hybrid");
-    let top_k       = body.top_k.unwrap_or(5);
+    let tuning      = crate::settings::get(); // Admin → Settings; guests get at most 5 sources
+    let top_k       = body.top_k.unwrap_or(tuning.candidates);
 
     let start = std::time::Instant::now();
 
@@ -1113,7 +1111,7 @@ pub async fn ask_public(
     };
 
     // 2. Filter → merge per document + surrounding context (context number = card number)
-    let hits     = filter_sources(&all_chunks, &body.query, MIN_SOURCE_SCORE, 0.25, 5);
+    let hits     = filter_sources(&all_chunks, &body.query, tuning.min_score, 0.25, tuning.max_sources.min(5));
     let contexts = state.rag.build_context(&body.query, &hits).await;
     let relevant: Vec<&crate::db::SearchResult> = contexts.iter().collect();
 

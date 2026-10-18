@@ -26,7 +26,6 @@ pub struct LlmConfig {
     pub api_url:    String,
     pub api_key:    String,
     pub model:      String,
-    pub max_tokens: u32,
 }
 
 impl LlmConfig {
@@ -36,7 +35,6 @@ impl LlmConfig {
             api_url:    "http://localhost:11434/api/chat".to_string(),
             api_key:    String::new(),
             model:      model.to_string(),
-            max_tokens: 2048,
         }
     }
 
@@ -46,7 +44,6 @@ impl LlmConfig {
             api_url:    api_url.to_string(),
             api_key:    api_key.to_string(),
             model:      model.to_string(),
-            max_tokens: 2048,
         }
     }
 
@@ -56,7 +53,6 @@ impl LlmConfig {
             api_url:    String::new(),
             api_key:    api_key.to_string(),
             model:      model.to_string(),
-            max_tokens: 2048,
         }
     }
 }
@@ -71,12 +67,11 @@ fn cooldowns() -> &'static Mutex<HashMap<String, Instant>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Primary model followed by LLM_FALLBACK_MODELS (comma separated). For Gemini models the
-/// default fallback is gemini-3.1-flash-lite. Models still cooling down after a 429 go last.
+/// Primary model followed by the fallback models from Admin → Settings (default: env
+/// LLM_FALLBACK_MODELS, or gemini-3.1-flash-lite for Gemini). Models still cooling down after a
+/// 429 go last.
 pub fn model_chain(primary: &str) -> Vec<String> {
-    let fallbacks = std::env::var("LLM_FALLBACK_MODELS").unwrap_or_else(|_| {
-        if primary.starts_with("gemini") { "gemini-3.1-flash-lite".to_string() } else { String::new() }
-    });
+    let fallbacks = crate::settings::get().fallback_models.clone();
     chain_from(primary, &fallbacks, &cooldowns().lock().map(|c| c.clone()).unwrap_or_default(), Instant::now())
 }
 
@@ -225,6 +220,38 @@ impl RagEngine {
         Self { search, llm, http: Client::new() }
     }
 
+    /// Answer model: Admin → Settings, else the one from the environment.
+    fn model(&self) -> String {
+        let m = crate::settings::get().model.clone();
+        if m.is_empty() { self.llm.model.clone() } else { m }
+    }
+
+    /// Provider name and whether its API key is set (last 4 characters only) — for Admin → Settings.
+    pub fn provider_info(&self) -> (String, String, Option<String>) {
+        let name = match self.llm.provider {
+            LlmProvider::Gemini           => "gemini",
+            LlmProvider::OpenAICompatible => "openai-compatible",
+            LlmProvider::Ollama           => "ollama",
+        };
+        let key = self.llm.api_key.trim();
+        let tail = (key.len() >= 8).then(|| key[key.len() - 4..].to_string());
+        (name.to_string(), self.llm.model.clone(), tail)
+    }
+
+    /// One tiny request to `model` (no fallback) to check the key and the model name.
+    /// Costs one generation call.
+    pub async fn test_model(&self, model: &str) -> Result<String> {
+        let messages = vec![
+            Message { role: "system".into(), content: "Balas hanya dengan kata: OK".into() },
+            Message { role: "user".into(), content: "Tes koneksi".into() },
+        ];
+        match self.llm.provider {
+            LlmProvider::Gemini           => self.call_gemini_models(&[model.to_string()], "Balas hanya dengan kata: OK", &messages, 16).await,
+            LlmProvider::OpenAICompatible => self.call_openai_models(&[model.to_string()], &messages, 16).await,
+            LlmProvider::Ollama           => self.call_ollama(&messages).await,
+        }
+    }
+
     /// Klasifikasi tipe query via Gemini (single-token response).
     /// Fallback ke pattern-based jika LLM tidak tersedia atau gagal.
     /// Dipanggil dengan `&self` karena butuh http client dan API key.
@@ -242,10 +269,13 @@ impl RagEngine {
     async fn classify_query_llm(&self, query: &str) -> Option<QueryType> {
         let api_key = std::env::var("GEMINI_API_KEY").ok()?;
 
-        // Model klasifikasi: GEMINI_CLASSIFY_MODEL > GEMINI_MODEL > default flash-lite
-        let model = std::env::var("GEMINI_CLASSIFY_MODEL")
-            .or_else(|_| std::env::var("GEMINI_MODEL"))
-            .unwrap_or_else(|_| "gemini-3.5-flash-lite".to_string());
+        // Classifier model: GEMINI_CLASSIFY_MODEL > the answer model (when it is a Gemini model)
+        // > GEMINI_MODEL > default flash-lite
+        let answer_model = crate::settings::get().model.clone();
+        let model = std::env::var("GEMINI_CLASSIFY_MODEL").ok()
+            .or_else(|| answer_model.starts_with("gemini").then_some(answer_model))
+            .or_else(|| std::env::var("GEMINI_MODEL").ok())
+            .unwrap_or_else(|| "gemini-3.5-flash-lite".to_string());
 
         let prompt = format!(
             "Klasifikasikan query berikut ke salah satu kategori. \
@@ -537,10 +567,13 @@ impl RagEngine {
 
     async fn call_ollama(&self, messages: &[Message]) -> Result<String> {
         let req = OllamaChatRequest {
-            model:    self.llm.model.clone(),
+            model:    self.model(),
             messages: messages.to_vec(),
             stream:   false,
-            options:  OllamaOptions { num_predict: self.llm.max_tokens, temperature: 0.3 },
+            options:  OllamaOptions {
+                num_predict: crate::settings::get().max_tokens,
+                temperature: crate::settings::get().temperature as f32,
+            },
         };
 
         let resp = self.http.post(&self.llm.api_url).json(&req).send().await?;
@@ -556,14 +589,21 @@ impl RagEngine {
     }
 
     async fn call_openai_compatible(&self, messages: &[Message]) -> Result<String> {
+        let max_tokens = crate::settings::get().max_tokens;
+        self.call_openai_models(&model_chain(&self.model()), messages, max_tokens).await
+    }
+
+    /// Try `models` in order (next one on quota / overload / unknown model).
+    async fn call_openai_models(&self, models: &[String], messages: &[Message], max_tokens: u32) -> Result<String> {
+        let temperature = crate::settings::get().temperature as f32;
         let mut last_err = anyhow::anyhow!("no LLM model configured");
         let mut ok = None;
-        for model in model_chain(&self.llm.model) {
+        for model in models.iter().cloned() {
             let req = ChatRequest {
                 model:       model.clone(),
                 messages:    messages.to_vec(),
-                max_tokens:  self.llm.max_tokens,
-                temperature: 0.3,
+                max_tokens,
+                temperature,
                 stream:      false,
             };
             let mut builder = self.http.post(&self.llm.api_url).json(&req);
@@ -592,6 +632,13 @@ impl RagEngine {
     }
 
     async fn call_gemini(&self, system_prompt: &str, messages: &[Message]) -> Result<String> {
+        let max_tokens = crate::settings::get().max_tokens;
+        self.call_gemini_models(&model_chain(&self.model()), system_prompt, messages, max_tokens).await
+    }
+
+    /// Try `models` in order (next one on quota / overload / unknown model).
+    async fn call_gemini_models(&self, models: &[String], system_prompt: &str, messages: &[Message], max_tokens: u32) -> Result<String> {
+        let temperature = crate::settings::get().temperature as f32;
 
         // Konversi messages ke format Gemini — skip system (sudah di system_instruction)
         let contents: Vec<GeminiContent> = messages
@@ -613,14 +660,14 @@ impl RagEngine {
             },
             contents,
             generation_config: GeminiGenerationConfig {
-                max_output_tokens: self.llm.max_tokens,
-                temperature:       0.3,
+                max_output_tokens: max_tokens,
+                temperature,
             },
         };
 
         let mut last_err = anyhow::anyhow!("no Gemini model configured");
         let mut ok = None;
-        for model in model_chain(&self.llm.model) {
+        for model in models.iter().cloned() {
             let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
             let resp = self.http.post(&url).header("x-goog-api-key", &self.llm.api_key).json(&req).send().await?;
             let status = resp.status();

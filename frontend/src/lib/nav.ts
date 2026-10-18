@@ -1,6 +1,6 @@
 import type { ComponentType } from 'svelte';
 import {
-  MessageSquare, KeyRound, LayoutDashboard, Users, FileText, ScrollText, HelpCircle, FolderSync, MessageCircleQuestion
+  MessageSquare, KeyRound, LayoutDashboard, Users, FileText, ScrollText, HelpCircle, FolderSync, MessageCircleQuestion, SlidersHorizontal
 } from 'lucide-svelte';
 
 export interface NavItem {
@@ -42,6 +42,12 @@ export const adminNav: NavGroup[] = [
     label: 'People',
     items: [
       { href: '/admin/users', label: 'Users', icon: Users }
+    ]
+  },
+  {
+    label: 'System',
+    items: [
+      { href: '/admin/settings', label: 'Settings', icon: SlidersHorizontal }
     ]
   }
 ];

@@ -8,6 +8,8 @@ mod rag;
 mod reader;
 mod search;
 mod site;
+mod settings;
+mod settings_api;
 mod sources;
 mod sources_api;
 mod web_jobs;
@@ -137,6 +139,8 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    // Answer settings (Admin → Settings); defaults = the model from the environment
+    settings::init(db.pool(), settings::Settings::from_env(&llm_config.model)).await;
     let rag   = Arc::new(RagEngine::new(search, llm_config));
     let login_attempts = Arc::new(DashMap::new());
     let state = web::Data::new(AppState {
@@ -233,6 +237,10 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/chunks/{id}",              web::delete().to(handlers::admin_delete_chunk))
                     .route("/admin/chunks/{id}",              web::put().to(handlers::admin_update_chunk))
                     .route("/admin/logs",                web::get().to(handlers::admin_query_logs))
+                    .route("/admin/settings",            web::get().to(settings_api::get_settings))
+                    .route("/admin/settings",            web::put().to(settings_api::put_settings))
+                    .route("/admin/settings/reset",      web::post().to(settings_api::reset_settings))
+                    .route("/admin/settings/test",       web::post().to(settings_api::test_settings))
                     .route("/admin/unanswered",          web::get().to(handlers::admin_unanswered))
                     .route("/admin/unanswered/resolve",  web::post().to(handlers::admin_resolve_unanswered))
                     .route("/admin/faq/pins",            web::get().to(handlers::admin_faq_pins))

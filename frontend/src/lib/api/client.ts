@@ -175,6 +175,14 @@ export const admin = {
     request<UnansweredQuestion[]>(`/admin/unanswered?days=${days}&include_no_sources=${includeNoSources}`),
   resolveUnanswered: (ids: number[]) =>
     request<{ resolved: number }>('/admin/unanswered/resolve', { method: 'POST', body: JSON.stringify({ ids }) }),
+  // Answer settings (Admin → Settings)
+  settings: () => request<SettingsSnapshot>('/admin/settings'),
+  saveSettings: (s: AnswerSettings) =>
+    request<SettingsSnapshot>('/admin/settings', { method: 'PUT', body: JSON.stringify(s) }),
+  resetSettings: () => request<SettingsSnapshot>('/admin/settings/reset', { method: 'POST' }),
+  testModel: (model: string) =>
+    request<{ ok: boolean; model: string; ms: number; reply?: string; error?: string }>(
+      '/admin/settings/test', { method: 'POST', body: JSON.stringify({ model }) }),
   // Query logs
   queryLogs: (limit = 50, offset = 0) =>
     request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?limit=${limit}&offset=${offset}`),
@@ -646,4 +654,23 @@ export function askPublic(
   })();
 
   return () => { cancelled = true; ctrl.abort(); };
+}
+
+export interface AnswerSettings {
+  model: string;
+  fallback_models: string;
+  temperature: number;
+  max_tokens: number;
+  candidates: number;
+  max_sources: number;
+  min_score: number;
+}
+export interface SettingsSnapshot {
+  settings: AnswerSettings;
+  defaults: AnswerSettings;
+  provider: string;
+  env_model: string;
+  api_key: { set: boolean; last4: string | null };
+  /** fields: [name, old, new]; name 'all' with empty new = reset to defaults */
+  history: { changed_at: string; changed_by: string | null; fields: [string, string, string][] }[];
 }
