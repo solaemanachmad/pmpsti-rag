@@ -286,6 +286,17 @@ pub async fn delete_source(req: HttpRequest, state: web::Data<AppState>, path: w
     }
 }
 
+/// POST /api/admin/drafts/{id}/test-questions — generate test questions for a draft and check
+/// that search finds it (1 generation call + 1 embedding per question).
+pub async fn test_questions(req: HttpRequest, state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
+    if let Err(r) = require_admin(&req, &state) { return r; }
+    match crate::draft_check::run(state.db.pool(), &state.rag, &path.into_inner()).await {
+        Ok(r) => HttpResponse::Ok().json(ApiSuccess::new(r)),
+        Err(e) if e == "Draft not found" => HttpResponse::NotFound().json(ApiError::new(404, e)),
+        Err(e) => HttpResponse::BadGateway().json(ApiError::new(502, e)),
+    }
+}
+
 /// GET /api/admin/drafts
 pub async fn list_drafts(req: HttpRequest, state: web::Data<AppState>) -> HttpResponse {
     if let Err(r) = require_admin(&req, &state) { return r; }

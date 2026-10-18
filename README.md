@@ -232,6 +232,15 @@ Add source → job queued → backend (web pages) or worker (PDFs): read → chu
 Re-check (daily, weekly, monthly or every N days per source; or off): changed page/file → new draft → review again. Unchanged content costs nothing.
 ```
 
+### Test questions (before approving)
+
+In the review of a draft, **Generate & check** asks Gemini for 3 questions a student could ask whose answers
+are in that draft (with short answers), then checks where search ranks the draft for each question among the
+approved documents plus this draft. "found #1" is good; "not in top 5" means students asking that may not get
+this page (missing key words, bad chunks); "Search finds X first" may point at a duplicate or an older version.
+A good question can be added to the suggested questions (FAQ) with one click. Costs 1 generation call and
+3 embeddings per check; runs only when the admin presses the button.
+
 ### Versions (when sources disagree)
 
 Fill in **Version** and **Valid from** on a source (Sources → pencil) or on a single document

@@ -215,6 +215,8 @@ export const admin = {
   drafts: () => request<DraftDocument[]>('/admin/drafts'),
   draftChunks: (document_id: string) =>
     request<DraftChunk[]>(`/admin/drafts/${encodeURIComponent(document_id)}/chunks`),
+  testQuestions: (document_id: string) =>
+    request<DraftCheck>(`/admin/drafts/${encodeURIComponent(document_id)}/test-questions`, { method: 'POST' }),
   approveDraft: (document_id: string) =>
     request<{ activated_chunks: number; archived_documents: string[] }>(
       `/admin/drafts/${encodeURIComponent(document_id)}/approve`, { method: 'POST' }),
@@ -315,6 +317,14 @@ export interface DraftDocument {
   page_count: number;
   job_log: string | null;
   replaces: string[];
+  /** last "test questions" check */
+  check?: DraftCheck | null;
+}
+export interface DraftCheck {
+  /** rank = position of this draft in search results (1 = first), null = not in the top 5 */
+  questions: { question: string; answer: string; rank: number | null; top_other: string | null }[];
+  found: number;
+  checked_at: string;
 }
 export interface DraftChunk {
   id: number;

@@ -1,5 +1,6 @@
 mod auth;
 mod db;
+mod draft_check;
 mod email;
 mod enrich;
 mod handlers;
@@ -139,6 +140,9 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    for sql in draft_check::SCHEMA {
+        if let Err(e) = sqlx::query(sql).execute(db.pool()).await { log::warn!("draft_checks schema skipped: {e}"); }
+    }
     // Answer settings (Admin → Settings); defaults = the model from the environment
     settings::init(db.pool(), settings::Settings::from_env(&llm_config.model)).await;
     let rag   = Arc::new(RagEngine::new(search, llm_config));
@@ -262,6 +266,7 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/drafts/{id}/chunks",     web::get().to(sources_api::draft_chunks))
                     .route("/admin/drafts/{id}/approve",    web::post().to(sources_api::approve_draft))
                     .route("/admin/drafts/{id}/reject",     web::post().to(sources_api::reject_draft))
+                    .route("/admin/drafts/{id}/test-questions", web::post().to(sources_api::test_questions))
             )
     })
     .bind(&addr)?
