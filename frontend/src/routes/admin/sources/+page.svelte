@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { admin } from '$lib/api/client';
   import type {
-    SourceRow, DraftDocument, DraftChunk, IngestJob, NewSourcePayload, ResolvedLink, SourceFile
+    SourceRow, DraftDocument, DraftChunk, IngestJob, NewSourcePayload, ResolvedLink, SourceFile, SourceUpdatePayload
   } from '$lib/api/client';
   import { errorMessage, formatDateTime, hostname } from '$lib/format';
   import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -11,9 +11,10 @@
   import Modal from '$lib/components/ui/Modal.svelte';
   import LoadingState from '$lib/components/ui/LoadingState.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import CheckInterval from '$lib/components/admin/CheckInterval.svelte';
   import {
     Loader2, RefreshCw, Plus, Trash2, ExternalLink, FolderOpen, FileText, Globe, Check, X,
-    ChevronDown, Clock, AlertTriangle, CircleCheck, Image, Table2, FolderSync, Network, Search, ArrowLeft
+    ChevronDown, Clock, AlertTriangle, CircleCheck, Image, Table2, FolderSync, Network, Search, ArrowLeft, Pencil
   } from 'lucide-svelte';
 
   let sources: SourceRow[] = [];
@@ -68,7 +69,7 @@
   };
 
   function blankForm(): NewSourcePayload {
-    return { url: '', title: '', category: '', subcategory: '', version_label: '', valid_from: '', supersedes_id: null, auto_check: true };
+    return { url: '', title: '', category: '', subcategory: '', version_label: '', valid_from: '', supersedes_id: null, auto_check: true, check_every_days: 1 };
   }
 
   onMount(load);
@@ -165,6 +166,42 @@
       notice = res.message ?? (res.queued ? 'Queued.' : 'Already waiting in the queue.');
       await load();
     } catch (e) { error = errorMessage(e); }
+  }
+
+  function everyLabel(days: number | undefined): string {
+    const d = days ?? 1;
+    return d === 1 ? 'checks daily' : d === 7 ? 'checks weekly' : d === 30 ? 'checks monthly' : `checks every ${d} days`;
+  }
+
+  // ── Edit source details (title, version, valid from) ──
+  let editingSrc: SourceRow | null = null;
+  let srcForm: SourceUpdatePayload = { title: '', category: '', subcategory: '', version_label: '', valid_from: '', auto_check: true, check_every_days: 1 };
+  let savingSrc = false;
+  let srcError = '';
+
+  function startEditSource(src: SourceRow) {
+    editingSrc = src;
+    srcForm = {
+      title: src.title, category: src.category, subcategory: src.subcategory,
+      version_label: src.version_label, valid_from: src.valid_from ?? '', auto_check: src.auto_check,
+      check_every_days: src.check_every_days ?? 1
+    };
+    srcError = '';
+  }
+
+  async function saveSource() {
+    if (!editingSrc) return;
+    savingSrc = true; srcError = '';
+    try {
+      await admin.updateSource(editingSrc.id, srcForm);
+      editingSrc = null;
+      notice = 'Source updated. The version applies to its documents right away.';
+      await load();
+    } catch (e) {
+      srcError = errorMessage(e);
+    } finally {
+      savingSrc = false;
+    }
   }
 
   async function remove(src: SourceRow) {
@@ -392,10 +429,7 @@
             {#each sources as s}<option value={s.id}>{s.title || s.url}{s.version_label ? ` (${s.version_label})` : ''}</option>{/each}
           </select>
         </div>
-        <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" bind:checked={form.auto_check} class="rounded border" />
-          Check for changes automatically (daily)
-        </label>
+        <CheckInterval id="src-interval" bind:autoCheck={form.auto_check} bind:days={form.check_every_days} />
       {/if}
     {/if}
     {#if addError}<Alert>{addError}</Alert>{/if}
@@ -543,7 +577,7 @@
                   <p class="text-xs text-muted-foreground truncate">{s.url}</p>
                   <p class="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
                     <span class="badge-neutral">{info.label}{s.kind === 'web_site' ? ` · ${s.discover === 'auto' ? 'finds new pages' : 'selected pages'}` : ''}</span>
-                    {#if s.version_label}<span class="badge-primary">{s.version_label}</span>{/if}
+                    {#if s.version_label || s.valid_from}<span class="badge-primary" title="Version used when sources disagree">{[s.version_label, s.valid_from].filter(Boolean).join(' · ')}</span>{/if}
                     {#if s.category}<span class="badge-neutral">{s.category}{s.subcategory ? ` / ${s.subcategory}` : ''}</span>{/if}
                     <span class="badge-neutral">
                       {#if multi}{s.file_count} {s.kind === 'web_site' ? (s.file_count === 1 ? 'page' : 'pages') : 'files'} · {/if}{s.active_files} active · {s.draft_files} in review
@@ -552,7 +586,7 @@
                   </p>
                   <p class="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                     <Clock size={11} /> {s.last_checked ? `checked ${formatDateTime(s.last_checked)}` : 'not checked yet'}
-                    {#if s.auto_check}· auto daily{/if}
+                    {#if s.auto_check}· {everyLabel(s.check_every_days)}{:else}· manual only{/if}
                   </p>
                   {#if s.last_job_state === 'failed' && s.last_job_log}
                     <div class="mt-2"><Alert>{s.last_job_log.split('\n').slice(-1)[0]}</Alert></div>
@@ -568,6 +602,7 @@
                   <button class="btn-ghost btn-sm" on:click={() => toggleFiles(s)} aria-expanded={openFiles === s.id}>{s.kind === 'web_site' ? 'Pages' : 'Files'}</button>
                 {/if}
                 <button class="btn-ghost btn-sm" on:click={() => toggleJobs(s)} aria-expanded={openJobs === s.id}>History</button>
+                <button class="icon-btn" on:click={() => startEditSource(s)} title="Edit details" aria-label="Edit source"><Pencil size={15} /></button>
                 <button class="icon-btn hover:!text-destructive hover:!bg-destructive/10" on:click={() => remove(s)} title="Remove source" aria-label="Remove source"><Trash2 size={15} /></button>
               </div>
             </div>
@@ -626,3 +661,46 @@
     {/if}
   </section>
 </div>
+
+<!-- Edit source -->
+<Modal open={!!editingSrc} title="Edit source" on:close={() => (editingSrc = null)}>
+  <form id="edit-source" on:submit|preventDefault={saveSource} class="space-y-4">
+    <p class="text-xs text-muted-foreground font-mono truncate">{editingSrc?.url}</p>
+    <div>
+      <label for="es-title" class="label">Title</label>
+      <input id="es-title" bind:value={srcForm.title} class="input" />
+    </div>
+    <div class="grid sm:grid-cols-2 gap-3">
+      <div>
+        <label for="es-version" class="label">Version</label>
+        <input id="es-version" bind:value={srcForm.version_label} class="input" placeholder="e.g. 2022 Revisi-2" />
+      </div>
+      <div>
+        <label for="es-valid" class="label">Valid from</label>
+        <input id="es-valid" type="date" bind:value={srcForm.valid_from} class="input" />
+      </div>
+      <div>
+        <label for="es-cat" class="label">Category</label>
+        <input id="es-cat" bind:value={srcForm.category} class="input" />
+      </div>
+      <div>
+        <label for="es-subcat" class="label">Subcategory</label>
+        <input id="es-subcat" bind:value={srcForm.subcategory} class="input" />
+      </div>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      When sources disagree (for example SKS totals), answers follow the newest “valid from” and mention the older value.
+      Version and date apply to this source's documents right away; title and category apply to pages processed from now on.
+    </p>
+    {#key editingSrc?.id}
+      <CheckInterval id="es-interval" bind:autoCheck={srcForm.auto_check} bind:days={srcForm.check_every_days} />
+    {/key}
+    {#if srcError}<Alert>{srcError}</Alert>{/if}
+  </form>
+  <svelte:fragment slot="footer">
+    <button type="button" class="btn-outline" disabled={savingSrc} on:click={() => (editingSrc = null)}>Cancel</button>
+    <button type="submit" form="edit-source" class="btn-primary" disabled={savingSrc}>
+      {#if savingSrc}<Loader2 size={15} class="animate-spin" />{/if} Save
+    </button>
+  </svelte:fragment>
+</Modal>

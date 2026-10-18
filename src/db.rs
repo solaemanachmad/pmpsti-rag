@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use anyhow::Result;
 use chrono::Utc;
 use pgvector::Vector;
@@ -21,6 +22,26 @@ pub struct SearchResult {
     pub score:        f64,
     /// Pages covered by this result (filled by `RagEngine::build_context`; empty otherwise).
     pub pages:        Vec<i32>,
+    /// "2022 Revisi-2, berlaku sejak 2025-11-01" (filled by `RagEngine::build_context`).
+    pub version:      String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DocVersion {
+    pub label:      String,
+    pub valid_from: Option<String>,
+}
+
+impl DocVersion {
+    /// Line shown to the model, e.g. "2022 Revisi-2, berlaku sejak 2025-11-01" (empty when unknown).
+    pub fn describe(&self) -> String {
+        match (self.label.trim(), self.valid_from.as_deref().map(str::trim).filter(|d| !d.is_empty())) {
+            ("", None)       => String::new(),
+            (l, None)        => l.to_string(),
+            ("", Some(d))    => format!("berlaku sejak {d}"),
+            (l, Some(d))     => format!("{l}, berlaku sejak {d}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -346,6 +367,9 @@ impl Database {
             "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_kind TEXT NOT NULL DEFAULT 'text'",
             "CREATE INDEX IF NOT EXISTS documents_status_idx ON documents(status)",
             "CREATE INDEX IF NOT EXISTS documents_source_file_idx ON documents(source_file_id)",
+            // Version of a document (overrides its source's); used to prefer the newer rule
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS version_label TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS valid_from DATE",
         ];
 
         for sql in &migrations {
@@ -527,6 +551,7 @@ impl Database {
                         chunk_index: chunk_idx,
                         score:       0.0,
                         pages:       vec![],
+                        version:     String::new(),
                     };
                     (sr, rrf)
                 });
@@ -553,6 +578,7 @@ impl Database {
                         chunk_index: chunk_idx,
                         score:       0.0,
                         pages:       vec![],
+                        version:     String::new(),
                     };
                     (sr, rrf)
                 });
@@ -1486,6 +1512,7 @@ fn rows_to_results(rows: Vec<sqlx::postgres::PgRow>) -> Vec<SearchResult> {
                 chunk_index: row.try_get("chunk_index").ok().flatten(),
                 score:       row.try_get("score").unwrap_or(0.0),
                 pages:       vec![],
+                version:     String::new(),
             }
         })
         .collect()
@@ -1605,6 +1632,11 @@ pub struct AdminDocument {
     pub source_title:  String,
     pub source_kind:   String,
     pub source_root:   String,
+    /// The document's own version (empty: it uses the source's)
+    pub version_label: String,
+    pub valid_from:    Option<String>,
+    pub source_version:    String,
+    pub source_valid_from: Option<String>,
 }
 
 impl Database {
@@ -1774,7 +1806,8 @@ impl Database {
     pub async fn admin_list_documents(&self) -> Result<Vec<AdminDocument>, String> {
         let rows = sqlx::query(
             "SELECT x.*, s.id AS source_id, COALESCE(s.title, '') AS source_title,
-                    COALESCE(s.kind, '') AS source_kind, COALESCE(s.url, '') AS source_root
+                    COALESCE(s.kind, '') AS source_kind, COALESCE(s.url, '') AS source_root,
+                    COALESCE(s.version_label, '') AS source_version, s.valid_from::text AS source_valid_from
              FROM (
                 SELECT document_id,
                        COALESCE(MIN(title),'') as title,
@@ -1784,6 +1817,8 @@ impl Database {
                        COALESCE(MIN(source_url),'') as source_url,
                        COALESCE(MIN(status),'active') as status,
                        MIN(source_file_id) as source_file_id,
+                       COALESCE(MAX(version_label),'') as version_label,
+                       MAX(valid_from)::text as valid_from,
                        COUNT(*) as chunk_count
                 FROM documents
                 GROUP BY document_id
@@ -1809,6 +1844,10 @@ impl Database {
             source_title:  r.get("source_title"),
             source_kind:   r.get("source_kind"),
             source_root:   r.get("source_root"),
+            version_label: r.get("version_label"),
+            valid_from:    r.get("valid_from"),
+            source_version:    r.get("source_version"),
+            source_valid_from: r.get("source_valid_from"),
         }).collect())
     }
 
@@ -1827,15 +1866,21 @@ impl Database {
         title: &str,
         category: &str,
         subcategory: &str,
+        version: Option<(&str, Option<&str>)>,
     ) -> Result<u64, String> {
         let res = sqlx::query(
-            "UPDATE documents SET title = $1, category = $2, subcategory = $3
+            "UPDATE documents SET title = $1, category = $2, subcategory = $3,
+                    version_label = CASE WHEN $5 THEN $6 ELSE version_label END,
+                    valid_from    = CASE WHEN $5 THEN $7::date ELSE valid_from END
              WHERE document_id = $4"
         )
         .bind(title)
         .bind(category)
         .bind(subcategory)
         .bind(document_id)
+        .bind(version.is_some())
+        .bind(version.map(|v| v.0.trim()).unwrap_or(""))
+        .bind(version.and_then(|v| v.1).filter(|d| !d.trim().is_empty()))
         .execute(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -1871,6 +1916,34 @@ impl Database {
     }
 
     // Fetch ALL chunks for a list of document_ids (for document expansion in RAG)
+    /// Version of each document: its own version_label/valid_from (as a pair), else its source's.
+    pub async fn document_versions(&self, document_ids: &[String]) -> Result<HashMap<String, DocVersion>, sqlx::Error> {
+        if document_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            "SELECT d.document_id,
+                    -- label and date as one pair: the document's own when it has either,
+                    -- else its source's (never a document label with a source date)
+                    CASE WHEN COALESCE(MAX(d.version_label), '') <> '' OR MAX(d.valid_from) IS NOT NULL
+                         THEN COALESCE(MAX(d.version_label), '') ELSE COALESCE(MAX(s.version_label), '') END AS label,
+                    (CASE WHEN COALESCE(MAX(d.version_label), '') <> '' OR MAX(d.valid_from) IS NOT NULL
+                          THEN MAX(d.valid_from) ELSE MAX(s.valid_from) END)::text AS valid_from
+             FROM documents d
+             LEFT JOIN source_files f ON f.id = d.source_file_id
+             LEFT JOIN sources s ON s.id = f.source_id
+             WHERE d.document_id = ANY($1)
+             GROUP BY d.document_id",
+        )
+        .bind(document_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(|r| (
+            r.get::<String, _>("document_id"),
+            DocVersion { label: r.get("label"), valid_from: r.get("valid_from") },
+        )).collect())
+    }
+
     pub async fn fetch_all_chunks_for_documents(
         &self,
         document_ids: &[String],

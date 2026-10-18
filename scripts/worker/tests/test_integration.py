@@ -180,3 +180,25 @@ def test_one_failing_file_does_not_break_the_job(conn):
     w.embedder = FakeEmbedder()
     state, log = run_once(c, sid, w)
     assert state == "done", log
+
+
+def test_rechecks_follow_each_sources_interval(conn):
+    c, _ = conn
+    urls = {1: "https://example.ac.id/r/daily.pdf", 7: "https://example.ac.id/r/weekly.pdf"}
+    with c.cursor() as cur:
+        cur.execute("DELETE FROM sources WHERE url LIKE 'https://example.ac.id/r/%'")
+        cur.execute("UPDATE sources SET last_checked = NOW()")  # leave other rows out of this test
+        ids = {}
+        for every, url in urls.items():
+            cur.execute("INSERT INTO sources (kind, url, external_id, check_every_days, last_checked) "
+                        "VALUES ('web_pdf', %s, %s, %s, NOW() - INTERVAL '2 days') RETURNING id", (url, url, every))
+            ids[every] = cur.fetchone()[0]
+    c.commit()
+    store.queue_rechecks(c, 20)
+    with c.cursor() as cur:
+        cur.execute("SELECT source_id FROM ingest_jobs WHERE state = 'queued' AND source_id = ANY(%s)",
+                    (list(ids.values()),))
+        queued = {r[0] for r in cur.fetchall()}
+        cur.execute("DELETE FROM sources WHERE url LIKE 'https://example.ac.id/r/%'")
+    c.commit()
+    assert queued == {ids[1]}  # daily is due after 2 days, weekly is not

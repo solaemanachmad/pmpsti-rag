@@ -3,7 +3,7 @@ PDF ingest worker — Google Drive folders/files and website PDFs -> DRAFT chunk
 Design: docs/design/ingest-from-links.md.  Run from scripts/:
 
     python -m worker                      # process all queued jobs (created in Admin -> Sources)
-    python -m worker --recheck            # also queue sources not checked for 20 h (scheduled run)
+    python -m worker --recheck            # also queue sources that are due (their own interval; scheduled run)
     python -m worker --source-id 3        # queue + process one source now
     python -m worker --file guide.pdf     # local test: read a PDF and print chunks, no database
 
@@ -258,7 +258,7 @@ def local_preview(path: str, figures: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--recheck", action="store_true", help="queue sources not checked for --recheck-hours")
+    ap.add_argument("--recheck", action="store_true", help="queue sources whose check interval (daily/weekly/N days) has passed; never sooner than --recheck-hours")
     ap.add_argument("--recheck-hours", type=float, default=20)
     ap.add_argument("--source-id", type=int, help="queue this source now, then process the queue")
     ap.add_argument("--max-jobs", type=int, default=20)

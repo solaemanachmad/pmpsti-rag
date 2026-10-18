@@ -229,8 +229,17 @@ the website, add both: the file is stored once and answers cite the website link
 ```
 Add source → job queued → backend (web pages) or worker (PDFs): read → chunks → embeddings → DRAFT
           → Admin → Sources → review → Approve / Approve all (active; older version archived) / Reject
-Daily re-check: changed page/file → new draft → review again. Unchanged content costs nothing.
+Re-check (daily, weekly, monthly or every N days per source; or off): changed page/file → new draft → review again. Unchanged content costs nothing.
 ```
+
+### Versions (when sources disagree)
+
+Fill in **Version** and **Valid from** on a source (Sources → pencil) or on a single document
+(Documents → pencil; a document's own value overrides its source's). Every context chunk sent to the
+model carries a `Versi:` line, and the prompt tells it to answer from the newest version and mention the
+older value. Example: PDF 2022 (40 SKS, tesis 8 SKS) vs website Kurikulum 2022 Revisi-2, valid from
+2025-11 (36 SKS, tesis 6 SKS). Documents without a version are treated as "unknown": the answer gives both
+values and suggests confirming with the study programme.
 
 ### Run the worker
 

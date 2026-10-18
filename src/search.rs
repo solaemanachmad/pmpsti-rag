@@ -185,14 +185,16 @@ impl SearchEngine {
             ([], None)    => "—".to_string(),
             (pages, _)    => format!("hal. {}", format_pages(pages)),
         };
+        let version = if r.version.is_empty() { String::new() } else { format!("Versi: {}\n", r.version) };
         format!(
-            "[{}] {} ({})\nKategori: {} / {}\nSumber: {}\n\n{}",
+            "[{}] {} ({})\nKategori: {} / {}\nSumber: {}\n{}\n{}",
             i + 1,
             r.title,
             location,
             r.category,
             r.subcategory,
             r.source_url,
+            version,
             r.content,
         )
     }
@@ -224,5 +226,36 @@ mod tests {
         assert_eq!(format_pages(&[3, 5, 6, 7, 10]), "3, 5–7, 10");
         assert_eq!(format_pages(&[24]), "24");
         assert_eq!(format_pages(&[]), "");
+    }
+}
+
+#[cfg(test)]
+mod version_line_tests {
+    use super::*;
+    use crate::db::DocVersion;
+
+    fn result(version: &str) -> SearchResult {
+        SearchResult {
+            document_id: "d".into(), title: "Kurikulum".into(), content: "Tesis 6 SKS".into(),
+            snippet: String::new(), category: "akademik".into(), subcategory: String::new(),
+            source_url: "https://x.id/k.html".into(), page_number: None, chunk_index: Some(0),
+            score: 1.0, pages: vec![], version: version.into(),
+        }
+    }
+
+    #[test]
+    fn context_shows_the_version_line_only_when_known() {
+        let with = SearchEngine::format_context(&[result("2022 Revisi-2, berlaku sejak 2025-11-01")]);
+        assert!(with.contains("Versi: 2022 Revisi-2, berlaku sejak 2025-11-01\n"));
+        assert!(!SearchEngine::format_context(&[result("")]).contains("Versi:"));
+    }
+
+    #[test]
+    fn describes_versions() {
+        let v = |l: &str, d: Option<&str>| DocVersion { label: l.into(), valid_from: d.map(Into::into) }.describe();
+        assert_eq!(v("", None), "");
+        assert_eq!(v("2022", None), "2022");
+        assert_eq!(v("", Some("2025-11-01")), "berlaku sejak 2025-11-01");
+        assert_eq!(v("2022 Revisi-2", Some("2025-11-01")), "2022 Revisi-2, berlaku sejak 2025-11-01");
     }
 }

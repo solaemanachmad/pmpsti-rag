@@ -244,6 +244,7 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/sources",                web::post().to(sources_api::create_source))
                     .route("/admin/sources/resolve",        web::post().to(sources_api::resolve_link))
                     .route("/admin/sources/{id}",           web::delete().to(sources_api::delete_source))
+                    .route("/admin/sources/{id}",           web::patch().to(sources_api::update_source))
                     .route("/admin/sources/{id}/pages",     web::post().to(sources_api::add_pages))
                     .route("/admin/sources/{id}/files",     web::get().to(sources_api::list_files))
                     .route("/admin/sources/{id}/approve-all", web::post().to(sources_api::approve_all))

@@ -102,6 +102,9 @@ pub async fn create_source(req: HttpRequest, state: web::Data<AppState>, body: w
             return HttpResponse::BadRequest().json(ApiError::new(400, "valid_from harus berformat YYYY-MM-DD"));
         }
     }
+    if let Err(e) = sources::valid_interval(body.check_every_days) {
+        return HttpResponse::BadRequest().json(ApiError::new(400, e));
+    }
     let user_id = claims.sub.parse::<i64>().ok();
     match sources::create_source(state.db.pool(), &body, &link, user_id).await {
         Ok(id) => HttpResponse::Created().json(ApiSuccess::new(serde_json::json!({
@@ -259,6 +262,17 @@ pub async fn list_jobs(req: HttpRequest, state: web::Data<AppState>, path: web::
     if let Err(r) = require_admin(&req, &state) { return r; }
     match sources::list_jobs(state.db.pool(), path.into_inner()).await {
         Ok(rows) => HttpResponse::Ok().json(ApiSuccess::new(rows)),
+        Err(e) => server_error(e),
+    }
+}
+
+/// PATCH /api/admin/sources/{id}
+pub async fn update_source(req: HttpRequest, state: web::Data<AppState>, path: web::Path<i64>, body: web::Json<sources::SourceUpdate>) -> HttpResponse {
+    if let Err(r) = require_admin(&req, &state) { return r; }
+    match sources::update_source(state.db.pool(), path.into_inner(), &body).await {
+        Ok(true)  => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "updated": true }))),
+        Ok(false) => HttpResponse::NotFound().json(ApiError::new(404, "Source not found")),
+        Err(e) if e.starts_with("valid_from") || e.starts_with("check_every_days") => HttpResponse::BadRequest().json(ApiError::new(400, e)),
         Err(e) => server_error(e),
     }
 }
