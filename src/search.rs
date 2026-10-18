@@ -159,17 +159,7 @@ impl SearchEngine {
         }
     }
 
-    pub fn format_context(results: &[SearchResult]) -> String {
-        results
-            .iter()
-            .enumerate()
-            .map(|(i, r)| Self::format_one(i, r))
-            .collect::<Vec<_>>()
-            .join("\n\n---\n\n")
-    }
-
-    /// Sama seperti format_context, tapi menerima slice of references
-    /// (dipakai oleh answer_with_chunks setelah filter_sources).
+    /// Numbered context for the prompt ([1]..[N] = source cards); used by answer_with_chunks.
     pub fn format_context_refs(results: &[&SearchResult]) -> String {
         results
             .iter()
@@ -245,9 +235,9 @@ mod version_line_tests {
 
     #[test]
     fn context_shows_the_version_line_only_when_known() {
-        let with = SearchEngine::format_context(&[result("2022 Revisi-2, berlaku sejak 2025-11-01")]);
+        let with = SearchEngine::format_context_refs(&[&result("2022 Revisi-2, berlaku sejak 2025-11-01")]);
         assert!(with.contains("Versi: 2022 Revisi-2, berlaku sejak 2025-11-01\n"));
-        assert!(!SearchEngine::format_context(&[result("")]).contains("Versi:"));
+        assert!(!SearchEngine::format_context_refs(&[&result("")]).contains("Versi:"));
     }
 
     #[test]

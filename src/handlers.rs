@@ -552,6 +552,49 @@ pub(crate) fn require_auth(req: &HttpRequest, jwt_secret: &str) -> Result<JwtCla
     })
 }
 
+/// The API key sent with a request: `Authorization: Bearer rag_…` or `X-API-Key: rag_…`.
+fn api_key_from(req: &HttpRequest) -> Option<String> {
+    let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::trim);
+    header("X-API-Key")
+        .or_else(|| header("Authorization").and_then(extract_bearer))
+        .filter(|k| k.starts_with("rag_") && k.len() == 68)
+        .map(str::to_string)
+}
+
+/// User for /api/ask: the signed-in user (cookie / JWT), or the owner of a valid API key
+/// (created on the API Keys page). API keys are limited to their `rate_limit` requests per minute.
+async fn ask_user(req: &HttpRequest, state: &AppState) -> Result<i64, HttpResponse> {
+    let jwt_err = match require_auth(req, &state.jwt_secret) {
+        Ok(c) => return Ok(c.sub.parse().unwrap_or(0)),
+        Err(r) => r,
+    };
+    let Some(key) = api_key_from(req) else { return Err(jwt_err) };
+    let invalid = || HttpResponse::Unauthorized().json(ApiError::new(401, "API key tidak valid atau sudah dicabut"));
+    let Ok(Some((key_id, user_id, hash, _perms, rate_limit))) = state.db.lookup_api_key(&key[..12]).await else {
+        return Err(invalid());
+    };
+    if !verify_password(&key, &hash).unwrap_or(false) {
+        return Err(invalid());
+    }
+    // Per-key limit per minute (shares the in-memory map used for login attempts)
+    {
+        let now = Instant::now();
+        let mut e = state.login_attempts.entry(format!("apikey:{key_id}"))
+            .or_insert_with(|| LoginAttempt { count: 0, window_start: now });
+        if e.window_start.elapsed().as_secs() >= 60 {
+            e.count = 0;
+            e.window_start = now;
+        }
+        if e.count >= rate_limit.max(1) as u32 {
+            return Err(HttpResponse::TooManyRequests().json(ApiError::new(
+                429, &format!("Batas {rate_limit} permintaan per menit untuk API key ini tercapai"))));
+        }
+        e.count += 1;
+    }
+    let _ = state.db.touch_api_key(key_id).await;
+    Ok(user_id)
+}
+
 // ══════════════════════════════════════════════════════════════════
 //  AUTH HANDLERS
 // ══════════════════════════════════════════════════════════════════
@@ -925,11 +968,10 @@ pub async fn ask(
     state: web::Data<AppState>,
     body:  web::Json<AskRequest>,
 ) -> HttpResponse {
-    let claims = match require_auth(&req, &state.jwt_secret) {
-        Ok(c) => c,
+    let uid = match ask_user(&req, &state).await {
+        Ok(u) => u,
         Err(r) => return r,
     };
-    let uid: i64 = claims.sub.parse().unwrap_or(0);
 
     if body.query.trim().is_empty() {
         return HttpResponse::BadRequest()
@@ -2007,7 +2049,17 @@ const {{ chromium }} = require('playwright');
             let rendered = String::from_utf8_lossy(&o.stdout).to_string();
             if rendered.len() > html.len() { Ok(rendered) } else { Ok(html) }
         }
-        _ => Ok(html), // fallback ke reqwest jika node/playwright tidak ada
+        // Fall back to the plain HTML when node/Playwright is missing or fails, but say so:
+        // JavaScript-filled tables (e.g. staff lists) may then be incomplete.
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            log::warn!("[fetch] JS rendering failed for {url}, using plain HTML: {}", err.lines().next().unwrap_or(""));
+            Ok(html)
+        }
+        Err(e) => {
+            log::warn!("[fetch] JS rendering unavailable for {url} (node not found: {e}), using plain HTML");
+            Ok(html)
+        }
     }
 }
 

@@ -698,11 +698,6 @@ impl Database {
         truncate_at_sentence(&snippet_raw, max_chars)
     }
 
-    /// Util: truncate di batas kalimat terdekat sebelum max_chars
-    fn truncate_snippet(content: &str, max_chars: usize) -> String {
-        truncate_at_sentence(content, max_chars)
-    }
-
 
     // ════════════════════════════════════════════════════════════
     //  QUERY LOGGING
@@ -844,6 +839,7 @@ impl Database {
         })
     }
 
+    #[allow(dead_code)] // retention helper, not scheduled yet
     pub async fn cleanup_old_query_logs(&self, days: i64) -> Result<u64> {
         let res = sqlx::query(
             "DELETE FROM query_logs WHERE created_at < NOW() - ($1::bigint * INTERVAL '1 day')"
@@ -1122,17 +1118,6 @@ impl Database {
         Ok(Some(user_id))
     }
 
-    pub async fn deactivate_user(&self, user_id: i64) -> Result<(), String> {
-        sqlx::query(
-            "UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1"
-        )
-        .bind(user_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
 
     // ════════════════════════════════════════════════════════════
     //  CHAT SESSIONS
@@ -1239,24 +1224,6 @@ impl Database {
         Ok(res.rows_affected() > 0)
     }
 
-    pub async fn delete_sessions_batch(
-        &self,
-        session_ids: &[String],
-        user_id:     i64,
-    ) -> Result<usize, String> {
-        // ANY($1) lebih efisien daripada loop
-        let res = sqlx::query(
-            "DELETE FROM chat_sessions WHERE id = ANY($1) AND user_id = $2"
-        )
-        .bind(session_ids)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        Ok(res.rows_affected() as usize)
-    }
-
     pub async fn rename_session(
         &self,
         session_id: &str,
@@ -1278,6 +1245,7 @@ impl Database {
         Ok(res.rows_affected() > 0)
     }
 
+    #[allow(dead_code)] // retention helper, not scheduled yet
     pub async fn cleanup_old_sessions(&self, days: i64) -> Result<u64> {
         let res = sqlx::query(
             "DELETE FROM chat_sessions
@@ -1422,16 +1390,6 @@ impl Database {
     // ════════════════════════════════════════════════════════════
     //  UTILITIES
     // ════════════════════════════════════════════════════════════
-
-    pub async fn document_exists(&self, file_hash: &str) -> Result<bool, sqlx::Error> {
-        let row = sqlx::query(
-            "SELECT 1 FROM documents WHERE file_hash = $1 LIMIT 1"
-        )
-        .bind(file_hash)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.is_some())
-    }
 
     pub async fn list_categories(&self) -> Result<Vec<String>, sqlx::Error> {
         let rows = sqlx::query(
