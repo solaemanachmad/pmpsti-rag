@@ -20,8 +20,15 @@ def db_host(url: str) -> str:
         return ""
 
 
+def endpoint_id(url: str) -> str:
+    """Neon endpoint of a connection string: 'ep-calm-dawn-b4n290kt' for both the pooled
+    (ep-…-pooler.region…) and the direct host, so both spellings count as the same database."""
+    host = db_host(url).split(".")[0]
+    return host[:-len("-pooler")] if host.endswith("-pooler") else host
+
+
 def is_production(url: str, production_url: str) -> bool:
-    return bool(production_url) and db_host(url) == db_host(production_url)
+    return bool(production_url) and endpoint_id(url) == endpoint_id(production_url)
 
 
 def connect(url: str):
@@ -40,6 +47,7 @@ class Source:
     category: str
     subcategory: str
     version_label: str
+    force: bool = False       # admin pressed "Check now": also re-process rejected files
 
 
 @dataclass
@@ -49,6 +57,7 @@ class FileRow:
     remote_rev: str
     status: str
     document_id: str
+    citation_url: str = ""
 
 
 def require_schema(conn) -> None:
@@ -97,13 +106,17 @@ def reset_stale_jobs(conn, hours: float = 3) -> int:
     return n
 
 
+# Same text as sources::queue_job's note in src/sources_api.rs (check_source)
+ADMIN_RECHECK_NOTE = "Dicek ulang oleh admin"
+
+
 def claim_job(conn) -> tuple[int, Source] | None:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """UPDATE ingest_jobs SET state = 'running', started_at = NOW()
                WHERE id = (SELECT id FROM ingest_jobs WHERE state = 'queued'
                            ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
-               RETURNING id, source_id"""
+               RETURNING id, source_id, log"""
         )
         job = cur.fetchone()
         if not job:
@@ -118,7 +131,8 @@ def claim_job(conn) -> tuple[int, Source] | None:
     if not src:
         finish_job(conn, job["id"], "failed", "Sumber sudah dihapus", {})
         return claim_job(conn)
-    return job["id"], Source(**src)
+    force = (job["log"] or "").startswith(ADMIN_RECHECK_NOTE)
+    return job["id"], Source(**src, force=force)
 
 
 def finish_job(conn, job_id: int, state: str, log: str, stats: dict, source_file_id: int | None = None) -> None:
@@ -144,12 +158,23 @@ def upsert_file(conn, source_id: int, external_id: str, name: str, citation_url:
                  SET name = EXCLUDED.name,
                      citation_url = CASE WHEN source_files.mirror_url <> '' THEN source_files.citation_url
                                          ELSE EXCLUDED.citation_url END
-               RETURNING id, COALESCE(sha256,''), COALESCE(remote_rev,''), status, COALESCE(document_id,'')""",
+               RETURNING id, COALESCE(sha256,''), COALESCE(remote_rev,''), status, COALESCE(document_id,''),
+                         citation_url""",
             (source_id, external_id, name, citation_url),
         )
         row = FileRow(*cur.fetchone())
     conn.commit()
     return row
+
+
+def document_status(conn, document_id: str) -> str | None:
+    """'active' / 'draft' / 'archived' (whichever exists, active first), or None."""
+    with conn.cursor() as cur:
+        cur.execute("""SELECT status FROM documents WHERE document_id = %s
+                       ORDER BY (status = 'active') DESC, (status = 'draft') DESC LIMIT 1""", (document_id,))
+        row = cur.fetchone()
+    conn.commit()
+    return row[0] if row else None
 
 
 def document_exists(conn, document_id: str) -> bool:
@@ -200,6 +225,10 @@ def write_drafts(conn, file_id: int, document_id: str, rows: list[dict]) -> int:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM documents WHERE status = 'draft' AND source_file_id = %s", (file_id,))
         cur.execute("DELETE FROM documents WHERE status = 'draft' AND document_id = %s", (document_id,))
+        # An archived copy with the same id (the file went back to an older version, or the
+        # source was removed and added again) keeps its history under a new id.
+        cur.execute("""UPDATE documents SET document_id = document_id || '@archived-' || EXTRACT(EPOCH FROM NOW())::bigint
+                       WHERE status = 'archived' AND document_id = %s""", (document_id,))
         psycopg2.extras.execute_values(
             cur,
             """INSERT INTO documents (document_id, title, content, document_type, source_url, category,

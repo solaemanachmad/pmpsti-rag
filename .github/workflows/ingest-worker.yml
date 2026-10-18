@@ -41,6 +41,9 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-ind
           pip install -r scripts/worker/requirements.txt
+      - name: Unit tests (no database, no network)
+        working-directory: scripts
+        run: python -m pytest -q worker/tests
       - name: Run worker
         working-directory: scripts
         env:
@@ -57,13 +60,3 @@ jobs:
           if [ "$FIGURES" != "true" ]; then args="$args --no-figures"; fi
           python -m worker $args
 
-  test:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r scripts/worker/requirements.txt
-      - run: python -m pytest -q worker/tests
-        working-directory: scripts

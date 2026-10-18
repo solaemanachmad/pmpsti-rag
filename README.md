@@ -243,8 +243,9 @@ python -m worker --source-id 3      # queue + process one source
 python -m pytest -q worker/tests    # tests (integration test needs TEST_DATABASE_URL to a throwaway DB)
 ```
 
-The worker refuses to write to the database in `PROD_DATABASE_URL` unless `--allow-production` is given
-(the GitHub workflow passes it; drafts are not searchable until approved).
+Locally the worker needs `PROD_DATABASE_URL` in the root `.env` (so it recognises production) and refuses
+to write to that database unless `--allow-production` is given. The GitHub workflow passes the flag;
+drafts are not searchable until an admin approves them.
 
 ---
 

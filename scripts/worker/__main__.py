@@ -136,11 +136,25 @@ class Worker:
             log.append(f"{len(files)} file ditemukan di {src.url}")
             if not files:
                 log.append("Tidak ada PDF. Untuk folder Drive: pastikan berisi PDF dan dibagikan 'Anyone with the link'.")
+            failed = 0
             for f in files:
-                file_stats, file_log, last_file_id = self.process_file(src, f)
+                try:
+                    file_stats, file_log, last_file_id = self.process_file(src, f)
+                except Exception as e:  # noqa: BLE001 — one bad file must not stop the others
+                    self.conn.rollback()
+                    failed += 1
+                    traceback.print_exc()
+                    file_stats, file_log = {"name": f.name, "result": "gagal"}, [f"GAGAL: {e}"]
+                    if "Kuota harian" in str(e):
+                        stats["files"].append(file_stats)
+                        log.extend(f"[{f.name}] {line}" for line in file_log)
+                        raise RuntimeError("kuota harian Gemini habis; sisa file diproses pada jalan berikutnya") from e
                 stats["files"].append(file_stats)
                 log.extend(f"[{f.name}] {line}" for line in file_log)
+            if failed and failed == len(files):
+                state = "failed"
         except Exception as e:  # noqa: BLE001 — every failure must end up in the job log
+            self.conn.rollback()
             state = "failed"
             log.append(f"GAGAL: {e}")
             traceback.print_exc()
@@ -155,16 +169,20 @@ class Worker:
         info = {"name": f.name, "result": ""}
         if row.status in ("active", "draft") and not store.document_exists(self.conn, row.document_id):
             row.status = "missing"      # chunks were deleted by hand → process the file again
+        # Statuses for which an unchanged file needs no work. "Check now" by an admin also
+        # re-processes a file whose draft was rejected.
+        settled = ("active", "draft") if src.force else ("active", "draft", "rejected")
+        unconditional = row.status not in settled
 
         if src.kind == "web_pdf":
-            dl = fetch.download_web_pdf(self.http, f.citation_url, row.remote_rev)
+            dl = fetch.download_web_pdf(self.http, f.external_id, "" if unconditional else row.remote_rev)
         else:
-            if f.remote_rev and f.remote_rev == row.remote_rev and row.status in ("active", "draft", "rejected"):
+            if f.remote_rev and f.remote_rev == row.remote_rev and not unconditional:
                 info["result"] = "tidak berubah"
                 return info, ["tidak berubah (Drive checksum sama)"], row.id
             dl = fetch.download_drive_file(self.http, f, self.api_key)
 
-        if dl.data is None or (dl.sha256 == row.sha256 and row.status in ("active", "draft", "rejected")):
+        if dl.data is None or (dl.sha256 == row.sha256 and not unconditional):
             store.update_file(self.conn, row.id, remote_rev=dl.remote_rev)
             info["result"] = "tidak berubah"
             note = "tidak berubah" + (" (pernah ditolak admin)" if row.status == "rejected" else "")
@@ -189,6 +207,14 @@ class Worker:
         if src.version_label:
             doc_title = f"{doc_title} ({src.version_label})"
 
+        document_id = f"{slugify(doc_title)}-{dl.sha256[:8]}"
+        if store.document_status(self.conn, document_id) == "active":
+            # e.g. a draft was rejected and the file went back to the approved content
+            store.update_file(self.conn, row.id, sha256=dl.sha256, remote_rev=dl.remote_rev,
+                              status="active", document_id=document_id)
+            info["result"] = "tidak berubah"
+            return info, ["isi sama dengan versi aktif; tidak ada draft baru"], row.id
+
         chunks, warnings, cstats = build_chunks(dl.data, doc_title, self.describer)
         if not chunks:
             store.update_file(self.conn, row.id, status="error", sha256=dl.sha256, remote_rev=dl.remote_rev)
@@ -197,9 +223,10 @@ class Worker:
         titles = [c.title(doc_title) for c in chunks]
         vectors = self.embedder.embed([document_text(t, c.content) for t, c in zip(titles, chunks)],
                                       "RETRIEVAL_DOCUMENT", titles=titles)
-        document_id = f"{slugify(doc_title)}-{dl.sha256[:8]}"
+        # Stored citation: may have been switched to the official website link (duplicate on Drive)
+        citation = row.citation_url or f.citation_url
         rows = [{
-            "title": t, "content": c.content, "source_url": f.citation_url,
+            "title": t, "content": c.content, "source_url": citation,
             "category": src.category, "subcategory": src.subcategory, "file_hash": dl.sha256,
             "embedding": vec_literal(v), "page": c.page, "chunk_index": i, "kind": c.kind,
         } for i, (t, c, v) in enumerate(zip(titles, chunks, vectors))]
@@ -248,9 +275,17 @@ def main(argv: list[str] | None = None) -> int:
         print("DATABASE_URL belum di-set", file=sys.stderr)
         return 2
     print(f"Database: {store.db_host(url)}")
-    if store.is_production(url, os.environ.get("PROD_DATABASE_URL", "")) and not args.allow_production:
-        print("Ini database PRODUCTION. Tambahkan --allow-production jika memang disengaja.", file=sys.stderr)
-        return 2
+    prod = os.environ.get("PROD_DATABASE_URL", "")
+    if not args.allow_production:
+        if not prod:
+            print("Set PROD_DATABASE_URL (connection string production) di .env agar worker bisa mengenali "
+                  "database production, atau jalankan dengan --allow-production bila memang ke production.",
+                  file=sys.stderr)
+            return 2
+        if store.is_production(url, prod):
+            print("DATABASE_URL menunjuk ke PRODUCTION. Tambahkan --allow-production jika memang disengaja.",
+                  file=sys.stderr)
+            return 2
 
     conn = store.connect(url)
     store.require_schema(conn)

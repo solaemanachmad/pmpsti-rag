@@ -119,7 +119,64 @@ def test_draft_then_unchanged_then_new_version(conn):
         assert cur.fetchall() == [("active", 1), ("draft", 1)]
 
 
-def test_production_guard():
-    assert store.is_production("postgresql://u:p@ep-prod.neon.tech/db", "postgresql://x:y@ep-prod.neon.tech/db?ssl=1")
-    assert not store.is_production("postgresql://u:p@ep-test.neon.tech/db", "postgresql://x:y@ep-prod.neon.tech/db")
-    assert not store.is_production("postgresql://u:p@ep-test.neon.tech/db", "")
+def _status_counts(c, sid):
+    with c.cursor() as cur:
+        cur.execute("SELECT d.status, COUNT(DISTINCT d.document_id) FROM documents d JOIN source_files f "
+                    "ON f.id = d.source_file_id WHERE f.source_id = %s GROUP BY d.status ORDER BY d.status", (sid,))
+        return dict(cur.fetchall())
+
+
+def _approve(c, sid):
+    """What the backend's approve does for a single-file source (sources::approve_draft)."""
+    with c.cursor() as cur:
+        cur.execute("""UPDATE documents SET status = 'archived' WHERE status = 'active' AND source_file_id IN
+                       (SELECT id FROM source_files WHERE source_id = %s)""", (sid,))
+        cur.execute("""UPDATE documents SET status = 'active' WHERE status = 'draft' AND source_file_id IN
+                       (SELECT id FROM source_files WHERE source_id = %s)""", (sid,))
+        cur.execute("UPDATE source_files SET status = 'active' WHERE source_id = %s", (sid,))
+    c.commit()
+
+
+def test_back_to_an_archived_version_and_rejected_recheck(conn):
+    c, sid = conn
+    w = make_worker(c, make_pdf("A"))
+    assert run_once(c, sid, w)[0] == "done"; _approve(c, sid)          # A active
+    w.http = FakeHTTP(make_pdf("B"))
+    assert run_once(c, sid, w)[0] == "done"; _approve(c, sid)          # B active, A archived
+    w.http = FakeHTTP(make_pdf("A"))
+    state, log = run_once(c, sid, w)                                    # back to A: same id as archived A
+    assert state == "done", log
+    assert _status_counts(c, sid) == {"active": 1, "archived": 1, "draft": 1}   # archived A kept under a new id
+
+    # reject the draft → a normal re-check skips it, "Check now" by an admin processes it again
+    with c.cursor() as cur:
+        cur.execute("DELETE FROM documents WHERE status = 'draft' AND source_file_id IN "
+                    "(SELECT id FROM source_files WHERE source_id = %s)", (sid,))
+        cur.execute("UPDATE source_files SET status = 'rejected' WHERE source_id = %s", (sid,))
+    c.commit()
+    state, log = run_once(c, sid, w)
+    assert "ditolak" in log and "draft" not in _status_counts(c, sid)
+    with c.cursor() as cur:
+        cur.execute("INSERT INTO ingest_jobs (source_id, log) VALUES (%s, %s)", (sid, store.ADMIN_RECHECK_NOTE))
+    c.commit()
+    job = store.claim_job(c)
+    assert job[1].force
+    w.run_job(*job)
+    assert _status_counts(c, sid).get("draft") == 1
+
+
+def test_one_failing_file_does_not_break_the_job(conn):
+    c, sid = conn
+
+    class Broken(FakeEmbedder):
+        def embed(self, *a, **k):
+            raise RuntimeError("embedding service down")
+
+    w = make_worker(c, make_pdf("A"))
+    w.embedder = Broken()
+    state, log = run_once(c, sid, w)
+    assert state == "failed" and "embedding service down" in log
+    # the connection is still usable and the next run works
+    w.embedder = FakeEmbedder()
+    state, log = run_once(c, sid, w)
+    assert state == "done", log

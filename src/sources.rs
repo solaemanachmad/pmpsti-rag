@@ -57,6 +57,11 @@ pub async fn setup_tables(pool: &PgPool) -> anyhow::Result<()> {
         )",
         "CREATE INDEX IF NOT EXISTS ingest_jobs_state_idx ON ingest_jobs(state, created_at)",
         "CREATE INDEX IF NOT EXISTS source_files_source_idx ON source_files(source_id)",
+        // HNSW index over searchable chunks only. pgvector filters a plain HNSW scan AFTER the
+        // index lookup, so drafts/archived versions (near-identical to the active one) could
+        // fill the candidate list and leave semantic search with too few active results.
+        "CREATE INDEX IF NOT EXISTS documents_embedding_active_idx
+            ON documents USING hnsw (embedding vector_cosine_ops) WHERE status = 'active'",
     ];
     for sql in statements {
         sqlx::query(sql).execute(pool).await?;
@@ -370,20 +375,30 @@ pub async fn list_drafts(pool: &PgPool) -> Result<Vec<DraftDocument>, String> {
     Ok(out)
 }
 
-/// Active documents that approving `draft_doc_id` will archive: earlier versions of the same
-/// source file, plus all documents of the source this one supersedes.
+/// Active documents that approving `draft_doc_id` will archive:
+/// - earlier versions of the same source file, and
+/// - the documents of the source this one supersedes — only when this is the LAST draft of the
+///   new source, so a folder that replaces another folder swaps over in one step instead of
+///   removing old guidebooks while their replacements are still waiting for review.
 const REPLACED_SQL: &str =
     "WITH draft AS (
         SELECT DISTINCT d.source_file_id, f.source_id
         FROM documents d LEFT JOIN source_files f ON f.id = d.source_file_id
         WHERE d.document_id = $1 AND d.status = 'draft'
+     ),
+     last_draft AS (
+        SELECT dr.source_id FROM draft dr
+        WHERE dr.source_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM documents d2 JOIN source_files f2 ON f2.id = d2.source_file_id
+            WHERE f2.source_id = dr.source_id AND d2.status = 'draft' AND d2.document_id <> $1
+        )
      )
      SELECT DISTINCT d.document_id FROM documents d
      WHERE d.status = 'active' AND d.document_id <> $1 AND (
         d.source_file_id IN (SELECT source_file_id FROM draft WHERE source_file_id IS NOT NULL)
         OR d.source_file_id IN (
             SELECT f.id FROM source_files f JOIN sources s ON s.supersedes_id = f.source_id
-            WHERE s.id IN (SELECT source_id FROM draft)
+            WHERE s.id IN (SELECT source_id FROM last_draft)
         )
      )";
 
@@ -394,8 +409,13 @@ pub async fn documents_replaced_by(pool: &PgPool, draft_doc_id: &str) -> Result<
 
 /// Approve a draft: its chunks become searchable, replaced documents are archived.
 pub async fn approve_draft(pool: &PgPool, document_id: &str) -> Result<(u64, Vec<String>), String> {
-    let replaced = documents_replaced_by(pool, document_id).await?;
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // Serialise approvals of the same source so two admins cannot archive in parallel
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('approve-draft'))")
+        .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    let replaced: Vec<String> = sqlx::query(REPLACED_SQL).bind(document_id)
+        .fetch_all(&mut *tx).await.map_err(|e| e.to_string())?
+        .iter().map(|r| r.get("document_id")).collect();
     if !replaced.is_empty() {
         sqlx::query("UPDATE documents SET status = 'archived', updated_at = NOW()
                      WHERE status = 'active' AND document_id = ANY($1::text[])")
