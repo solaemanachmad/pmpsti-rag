@@ -398,6 +398,76 @@ fn summary_chunk(label: &str, table: &PageTable, total: usize) -> String {
     text
 }
 
+/// Signs of code in a chunk; two different ones make a chunk "code-like".
+const CODE_MARKERS: &[&str] = &[
+    "function(", "function (", "=>", "});", "document.", "window.", "var ", "$(", "<script", "{\"", "\":{",
+];
+
+fn looks_like_code(chunk: &str) -> bool {
+    let markers = CODE_MARKERS.iter().filter(|m| chunk.contains(*m)).count();
+    let symbols = chunk.chars().filter(|c| "{};=<>".contains(*c)).count();
+    markers >= 2 || symbols * 20 > chunk.chars().count().max(1) // more than 5 % code symbols
+}
+
+/// DataTables' pager text: only one page of rows was in the HTML.
+fn has_pagination_text(text: &str) -> bool {
+    let t = text.to_lowercase();
+    (t.contains("showing ") && t.contains(" entries")) || (t.contains("menampilkan ") && t.contains(" entri"))
+}
+
+/// Quality checks for a URL ingest preview: plain-English warnings for the admin, empty
+/// when nothing looks wrong. Each check comes from a problem seen in earlier ingests
+/// (JavaScript chunks, half-read paginated tables, sidebar menus, missing headings).
+pub fn quality_warnings(page: &PageContent, chunks: &[String], max_chars: usize) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+
+    if page.text.chars().count() < 300 && page.tables.is_empty() {
+        warnings.push(format!(
+            "Very little text ({} characters) and no tables — the page may need JavaScript or have moved.",
+            page.text.chars().count()
+        ));
+    }
+    let code = chunks.iter().filter(|c| looks_like_code(c)).count();
+    if code > 0 {
+        warnings.push(format!("{code} chunk{} look like code (JavaScript/CSS), not content.", plural(code)));
+    }
+    if has_pagination_text(&page.text) {
+        warnings.push("Pagination text found (e.g. \"Showing 1 to 10 of N entries\") — a table may be only partly read.".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let duplicates = chunks.iter().filter(|c| !seen.insert(c.trim())).count();
+    if duplicates > 0 {
+        warnings.push(format!("{duplicates} duplicate chunk{}.", plural(duplicates)));
+    }
+    let short = chunks.iter().filter(|c| c.chars().count() < 80).count();
+    if short > 0 {
+        warnings.push(format!("{short} very short chunk{} (under 80 characters).", plural(short)));
+    }
+    // Table summary chunks are long on purpose (every row's name, up to MAX_SUMMARY_CHARS)
+    let long = chunks.iter()
+        .filter(|c| {
+            let limit = if c.contains("\nJumlah data: ") { MAX_SUMMARY_CHARS } else { max_chars + 300 };
+            c.chars().count() > limit
+        })
+        .count();
+    if long > 0 {
+        warnings.push(format!("{long} chunk{} longer than {} characters.", plural(long), max_chars + 300));
+    }
+    if page.text.chars().count() > 1_500 && page.sections.iter().all(|s| s.path.is_empty()) {
+        warnings.push("No headings found — chunks will have no section path.".into());
+    }
+    let lines: Vec<&str> = page.text.lines().collect();
+    let menu_like = lines.iter().filter(|l| l.split_whitespace().count() <= 3).count();
+    if lines.len() >= 30 && menu_like * 10 > lines.len() * 6 {
+        warnings.push(format!(
+            "{menu_like} of {} text lines are 1–3 words — menus or link lists may have leaked in.",
+            lines.len()
+        ));
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +557,25 @@ mod tests {
         // A table directly under the chapter title keeps the E5 label (no repeated heading)
         let tendik = &json_tables(&Html::parse_document(D_TENDIK))[0];
         assert!(tendik.section.is_empty(), "{:?}", tendik.section);
+    }
+
+    #[test]
+    fn quality_warnings_flag_known_problems() {
+        let page = PageContent {
+            title: "t".into(),
+            text: "Showing 1 to 10 of 40 entries".into(),
+            ..Default::default()
+        };
+        let chunks = vec![
+            "jQuery(function($){ $(document).ready(function(){ var x = 1; }); });".to_string(),
+            "Same text here, long enough to not be flagged as a very short chunk at all.".to_string(),
+            "Same text here, long enough to not be flagged as a very short chunk at all.".to_string(),
+        ];
+        let w = quality_warnings(&page, &chunks, 1200).join("\n");
+        assert!(w.contains("look like code"), "{w}");
+        assert!(w.contains("Pagination text"), "{w}");
+        assert!(w.contains("1 duplicate chunk."), "{w}");
+        assert!(w.contains("Very little text"), "{w}");
     }
 
     #[test]

@@ -150,7 +150,10 @@ export const admin = {
     ),
 
   // Document ingest
-  ingestUrl: (payload: { url: string; title?: string; category?: string; subcategory?: string; chunk_strategy?: string }) =>
+  /** Read and chunk a URL like ingestUrl, but embed and save nothing. */
+  previewUrl: (payload: IngestUrlPayload) =>
+    request<UrlPreview>('/admin/documents/preview-url', { method: 'POST', body: JSON.stringify(payload) }),
+  ingestUrl: (payload: IngestUrlPayload) =>
     request<{ document_id: string; chunks: number; title: string }>(
       '/admin/documents/ingest-url',
       { method: 'POST', body: JSON.stringify(payload) }
@@ -348,6 +351,27 @@ export interface AdminChunk {
   subcategory: string;
   source_url: string;
   created_at: string;
+}
+
+export interface IngestUrlPayload {
+  url: string;
+  title?: string;
+  category?: string;
+  subcategory?: string;
+  chunk_strategy?: string;
+}
+
+export interface UrlPreview {
+  url: string;
+  title: string;
+  strategy: string;
+  text_chars: number;
+  sections: number;
+  tables: { caption: string; headers: string[]; rows: number }[];
+  /** Plain-English quality warnings; empty when nothing looks wrong. */
+  warnings: string[];
+  chunk_count: number;
+  chunks: { index: number; chars: number; text: string }[];
 }
 
 export interface AdminQueryLog {

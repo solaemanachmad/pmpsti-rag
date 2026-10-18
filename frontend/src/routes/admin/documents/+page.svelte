@@ -2,14 +2,14 @@
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
   import { admin } from '$lib/api/client';
-  import type { AdminDocument, AdminChunk } from '$lib/api/client';
+  import type { AdminDocument, AdminChunk, IngestUrlPayload, UrlPreview } from '$lib/api/client';
   import { errorMessage, hostname } from '$lib/format';
   import PageHeader from '$lib/components/ui/PageHeader.svelte';
   import Alert from '$lib/components/ui/Alert.svelte';
   import Modal from '$lib/components/ui/Modal.svelte';
   import LoadingState from '$lib/components/ui/LoadingState.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
-  import { Loader2, Trash2, RefreshCw, Globe, ChevronDown, Pencil, Search, FileText, ExternalLink, Layers } from 'lucide-svelte';
+  import { Loader2, Trash2, RefreshCw, Globe, ChevronDown, Pencil, Search, FileText, ExternalLink, Layers, Eye } from 'lucide-svelte';
 
   let documents: AdminDocument[] = [];
   let loading = false;
@@ -23,6 +23,11 @@
   let ingestUrl = ''; let ingestTitle = ''; let ingestCategory = ''; let ingestSubcategory = '';
   let ingestChunkStrategy = 'auto';
   let ingestLoading = false; let ingestError = '';
+  // Preview: what would be saved, plus quality warnings. Cleared when URL, title or
+  // strategy change, because those change the chunks.
+  let preview: UrlPreview | null = null;
+  let previewLoading = false;
+  let previewKey = '';
 
   const chunkStrategyOptions = [
     { value: 'auto',       label: 'Auto',       desc: 'Detects the best strategy from the content (recommended).' },
@@ -108,20 +113,39 @@
     showIngest = true;
   }
 
+  function ingestPayload(): IngestUrlPayload {
+    return {
+      url: ingestUrl.trim(),
+      title: ingestTitle.trim() || undefined,
+      category: ingestCategory.trim() || undefined,
+      subcategory: ingestSubcategory.trim() || undefined,
+      chunk_strategy: ingestChunkStrategy
+    };
+  }
+
+  $: currentKey = JSON.stringify([ingestUrl.trim(), ingestTitle.trim(), ingestChunkStrategy]);
+  $: if (preview && currentKey !== previewKey) preview = null;
+
+  async function doPreview() {
+    if (!ingestUrl.trim()) { ingestError = 'URL is required.'; return; }
+    previewLoading = true; ingestError = ''; preview = null;
+    try {
+      const key = currentKey;
+      preview = await admin.previewUrl(ingestPayload());
+      previewKey = key;
+    } catch (e) { ingestError = errorMessage(e); }
+    finally { previewLoading = false; }
+  }
+
   async function doIngest() {
     if (!ingestUrl.trim()) { ingestError = 'URL is required.'; return; }
     ingestLoading = true; ingestError = ''; notice = '';
     try {
-      const res = await admin.ingestUrl({
-        url: ingestUrl.trim(),
-        title: ingestTitle.trim() || undefined,
-        category: ingestCategory.trim() || undefined,
-        subcategory: ingestSubcategory.trim() || undefined,
-        chunk_strategy: ingestChunkStrategy
-      });
+      const res = await admin.ingestUrl(ingestPayload());
       notice = `Indexed “${res.title}” — ${res.chunks} chunks.`;
       ingestUrl = ingestTitle = ingestCategory = ingestSubcategory = '';
       ingestChunkStrategy = 'auto';
+      preview = null;
       showIngest = false;
       await loadDocs();
     } catch (e) { ingestError = errorMessage(e); }
@@ -140,7 +164,7 @@
 <svelte:head><title>Documents · Admin</title></svelte:head>
 
 <!-- Ingest modal -->
-<Modal open={showIngest} title="Add a source from URL" size="lg" on:close={() => !ingestLoading && (showIngest = false)}>
+<Modal open={showIngest} title="Add a source from URL" size="lg" on:close={() => !ingestLoading && !previewLoading && (showIngest = false)}>
   <form id="ingest" on:submit|preventDefault={doIngest} class="space-y-4">
     <div>
       <label for="ingest-url" class="label">URL</label>
@@ -174,11 +198,57 @@
       <p class="text-xs text-muted-foreground mt-2">{chunkStrategyOptions.find(o => o.value === ingestChunkStrategy)?.desc}</p>
     </fieldset>
     {#if ingestError}<Alert>{ingestError}</Alert>{/if}
+
+    {#if preview}
+      <section class="rounded-lg border p-3 space-y-3" aria-label="Preview" transition:slide={{ duration: 150 }}>
+        <div>
+          <p class="text-sm font-semibold break-words">{preview.title}</p>
+          <p class="text-xs text-muted-foreground mt-0.5">
+            {preview.chunk_count} chunks · {preview.sections} sections · {preview.tables.length} tables ·
+            {preview.text_chars.toLocaleString()} characters of text · strategy: {preview.strategy}
+          </p>
+        </div>
+
+        {#if preview.tables.length}
+          <ul class="text-xs space-y-1">
+            {#each preview.tables as t}
+              <li><span class="font-medium">Table{t.caption ? `: ${t.caption}` : ''}</span> — {t.rows} rows{t.headers.some(Boolean) ? ` (${t.headers.filter(Boolean).join(', ')})` : ''}</li>
+            {/each}
+          </ul>
+        {/if}
+
+        {#if preview.warnings.length}
+          <Alert variant="warning">
+            <ul class="list-disc pl-4 space-y-0.5">
+              {#each preview.warnings as w}<li>{w}</li>{/each}
+            </ul>
+          </Alert>
+        {:else}
+          <Alert variant="success">No problems found.</Alert>
+        {/if}
+
+        <div class="max-h-72 overflow-y-auto space-y-1.5 pr-1">
+          {#each preview.chunks as c (c.index)}
+            <details class="rounded-md border bg-muted/30 text-xs">
+              <summary class="cursor-pointer px-2.5 py-1.5 flex gap-2 min-w-0">
+                <span class="font-mono text-muted-foreground shrink-0">#{c.index + 1}</span>
+                <span class="truncate flex-1">{c.text.split('\n')[0]}</span>
+                <span class="text-muted-foreground shrink-0">{c.chars} ch</span>
+              </summary>
+              <pre class="whitespace-pre-wrap break-words font-sans px-2.5 pb-2 leading-relaxed">{c.text}</pre>
+            </details>
+          {/each}
+        </div>
+      </section>
+    {/if}
   </form>
   <svelte:fragment slot="footer">
-    <button type="button" class="btn-outline" disabled={ingestLoading} on:click={() => (showIngest = false)}>Cancel</button>
-    <button type="submit" form="ingest" class="btn-primary" disabled={ingestLoading}>
-      {#if ingestLoading}<Loader2 size={15} class="animate-spin" /> Processing…{:else}<Globe size={15} /> Fetch & index{/if}
+    <button type="button" class="btn-outline" disabled={ingestLoading || previewLoading} on:click={() => (showIngest = false)}>Cancel</button>
+    <button type="button" class="btn-outline" disabled={ingestLoading || previewLoading} on:click={doPreview}>
+      {#if previewLoading}<Loader2 size={15} class="animate-spin" /> Reading…{:else}<Eye size={15} /> Preview{/if}
+    </button>
+    <button type="submit" form="ingest" class="btn-primary" disabled={ingestLoading || previewLoading}>
+      {#if ingestLoading}<Loader2 size={15} class="animate-spin" /> Processing…{:else}<Globe size={15} /> {preview ? 'Save & index' : 'Fetch & index'}{/if}
     </button>
   </svelte:fragment>
 </Modal>

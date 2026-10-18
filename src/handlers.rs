@@ -1863,7 +1863,7 @@ fn extract_page(html: &str, url: &str, title_override: Option<String>) -> crate:
     // Title: the one given by the admin, else <title>, else the URL
     let page_title = scraper::Selector::parse("title").ok()
         .and_then(|sel| document.select(&sel).next())
-        .map(|e| e.text().collect::<String>().trim().to_string())
+        .map(|e| e.text().collect::<String>().replace('\u{a0}', " ").split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_default();
     let title = title_override
         .filter(|t| !t.is_empty())
@@ -2019,6 +2019,8 @@ pub async fn admin_preview_url(
         "tables":      page.tables.iter().map(|t| serde_json::json!({
             "caption": t.caption, "headers": t.headers, "rows": t.rows.len(),
         })).collect::<Vec<_>>(),
+        "sections":    page.sections.len(),
+        "warnings":    crate::reader::quality_warnings(&page, &chunks, chunk_max_chars()),
         "chunk_count": chunks.len(),
         "chunks":      chunks.iter().enumerate().map(|(i, c)| serde_json::json!({
             "index": i, "chars": c.chars().count(), "text": c,
@@ -2197,6 +2199,7 @@ mod tests {
     // Real pages saved on 2026-10-18, so parsing can be tested without the network.
     const TENAGA_PENDIDIK: &str = include_str!("../tests/fixtures/tenaga_pendidik.html");
     const D_TENDIK: &str = include_str!("../tests/fixtures/d_tendik.html");
+    const INTRODUCTION: &str = include_str!("../tests/fixtures/introduction.html");
 
     #[test]
     fn wordpress_page_reads_article_not_sidebar() {
@@ -2214,36 +2217,65 @@ mod tests {
     fn quarto_page_uses_page_title() {
         let page = extract_page(D_TENDIK, "https://mtiugm.github.io/panduan_pmpsti/appendix/d_tendik.html", None);
         assert!(page.title.starts_with("Lampiran D"), "unexpected title: {}", page.title);
+        // &nbsp; in <title> becomes a normal space ("1&nbsp; Pendahuluan" was stored with U+00A0)
+        let intro = extract_page(INTRODUCTION, "https://example.org/", None);
+        assert!(intro.title.starts_with("1 Pendahuluan"), "unexpected title: {:?}", intro.title);
         assert!(page.text.contains("Tabel D.1"));
         assert_eq!(page.tables.len(), 1);
         assert_eq!(page.tables[0].rows.len(), 40);
     }
 
-    /// Prints the text chunks of a saved guidebook page as URL ingest would make them
-    /// (sections → acronyms → auto strategy → heading path). Run with:
+    /// Chunks of a saved page as URL ingest makes them, without the network: sections →
+    /// acronyms → auto strategy (never semantic) → heading path, then table chunks.
+    fn offline_chunks(page: &crate::reader::PageContent) -> Vec<String> {
+        use crate::models::ChunkStrategy;
+        let (min, max) = (super::chunk_min_chars(), super::chunk_max_chars());
+        let mut chunks = Vec::new();
+        for section in &page.sections {
+            let text = crate::enrich::expand_acronyms(&section.text, 2);
+            let parts = match ChunkStrategy::detect(&text) {
+                ChunkStrategy::Structural => super::structural_chunk(&text, min, max),
+                _ => super::sentence_chunk(&text, min, max),
+            };
+            chunks.extend(with_heading_path(&section.path, parts));
+        }
+        for table in &page.tables {
+            chunks.extend(crate::reader::table_chunks(&page.title, table, max));
+        }
+        chunks
+    }
+
+    /// Prints the first chunks and the preview warnings of each saved page. Run with:
     /// `cargo test show_guidebook_chunks -- --ignored --nocapture`
     #[test]
     #[ignore = "prints example output; run explicitly"]
     fn show_guidebook_chunks() {
-        use crate::models::ChunkStrategy;
-        let html = include_str!("../tests/fixtures/introduction.html");
-        let page = extract_page(html, "https://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html", None);
-        let (min, max) = (super::chunk_min_chars(), super::chunk_max_chars());
-        let mut n = 0;
-        for section in &page.sections {
-            let text = crate::enrich::expand_acronyms(&section.text, 2);
-            let chunks = match ChunkStrategy::detect(&text) {
-                ChunkStrategy::Structural => super::structural_chunk(&text, min, max),
-                _ => super::sentence_chunk(&text, min, max),
-            };
-            for c in with_heading_path(&section.path, chunks) {
-                n += 1;
-                if n <= 6 {
-                    println!("--- chunk {n} ({} chars)\n{}\n", c.len(), c.chars().take(300).collect::<String>());
-                }
+        for (name, html, url) in [
+            ("introduction", INTRODUCTION, "https://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html"),
+            ("d_tendik", D_TENDIK, "https://mtiugm.github.io/panduan_pmpsti/appendix/d_tendik.html"),
+            ("c_ewmp", include_str!("../tests/fixtures/c_ewmp.html"), "https://mtiugm.github.io/panduan_pmpsti/appendix/c_ewmp.html"),
+            ("tenaga_pendidik", TENAGA_PENDIDIK, "https://jteti.ugm.ac.id/tenaga-pendidik/"),
+        ] {
+            let page = extract_page(html, url, None);
+            let chunks = offline_chunks(&page);
+            println!("\n================ {name}: {} sections, {} chunks ================", page.sections.len(), chunks.len());
+            for (i, c) in chunks.iter().take(3).enumerate() {
+                println!("--- chunk {} ({} chars)\n{}\n", i + 1, c.len(), c.chars().take(300).collect::<String>());
             }
+            for c in chunks.iter().filter(|c| c.chars().count() < 80 || c.chars().count() > 1500) {
+                println!("  flagged ({} chars): {}", c.chars().count(), c.chars().take(160).collect::<String>().replace('\n', " / "));
+            }
+            println!("warnings: {:?}", crate::reader::quality_warnings(&page, &chunks, super::chunk_max_chars()));
         }
-        println!("{} text chunks from {} sections (+ table chunks)", n, page.sections.len());
+    }
+
+    #[test]
+    fn saved_pages_have_no_quality_warnings() {
+        for (name, html) in [("introduction", INTRODUCTION), ("d_tendik", D_TENDIK)] {
+            let page = extract_page(html, "https://example.org/", None);
+            let warnings = crate::reader::quality_warnings(&page, &offline_chunks(&page), super::chunk_max_chars());
+            assert!(warnings.is_empty(), "{name}: {warnings:?}");
+        }
     }
 
     #[test]
