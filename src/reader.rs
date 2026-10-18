@@ -39,6 +39,9 @@ pub struct PageContent {
     /// The same text split at headings, in page order (see `sections`).
     pub sections: Vec<Section>,
     pub tables: Vec<PageTable>,
+    /// A table's rows are filled in by JavaScript (empty table, or DataTables loading by AJAX),
+    /// so they are missing here: reported by `quality_warnings`.
+    pub js_tables: bool,
 }
 
 /// Elements whose text is never part of the main text: page chrome, code, form controls
@@ -411,12 +414,36 @@ fn has_pagination_text(text: &str) -> bool {
     (t.contains("showing ") && t.contains(" entries")) || (t.contains("menampilkan ") && t.contains(" entri"))
 }
 
+/// True when a table's rows are loaded by JavaScript: a DataTables setup that fetches its data
+/// (`ajax`, `serverSide`, `sAjaxSource`), or a table with headers but no data rows.
+pub fn js_filled_tables(document: &Html) -> bool {
+    let scripts = Selector::parse("script").ok()
+        .map(|sel| document.select(&sel).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default();
+    let lower = scripts.to_lowercase();
+    let ajax_table = (lower.contains("datatable") || lower.contains("tabulator") || lower.contains("bootstraptable"))
+        && (lower.contains("ajax") || lower.contains("serverside") || lower.contains("sajaxsource"));
+    let (Ok(tables), Ok(data_cell), Ok(header)) =
+        (Selector::parse("table"), Selector::parse("tbody td"), Selector::parse("th"))
+    else { return false };
+    let has_rows = |t: &ElementRef| t.select(&data_cell).next().is_some();
+    let empty_table = document.select(&tables).any(|t| t.select(&header).next().is_some() && !has_rows(&t));
+    // DataTables often only adds search/sort to rows already in the HTML: then nothing is missing
+    let any_rows = document.select(&tables).any(|t| has_rows(&t));
+    empty_table || (ajax_table && !any_rows)
+}
+
 /// Quality checks for a URL ingest preview: plain-English warnings for the admin, empty
 /// when nothing looks wrong. Each check comes from a problem seen in earlier ingests
 /// (JavaScript chunks, half-read paginated tables, sidebar menus, missing headings).
 pub fn quality_warnings(page: &PageContent, chunks: &[String], max_chars: usize) -> Vec<String> {
     let mut warnings = Vec::new();
     let plural = |n: usize| if n == 1 { "" } else { "s" };
+
+    if page.js_tables {
+        warnings.push("A table on this page is filled in by JavaScript, so its rows were not read. \
+                       Add that data from a PDF or as pasted text.".into());
+    }
 
     if page.text.chars().count() < 300 && page.tables.is_empty() {
         warnings.push(format!(
@@ -553,6 +580,19 @@ mod tests {
         // A table directly under the chapter title keeps the E5 label (no repeated heading)
         let tendik = &json_tables(&Html::parse_document(D_TENDIK))[0];
         assert!(tendik.section.is_empty(), "{:?}", tendik.section);
+    }
+
+    #[test]
+    fn detects_tables_filled_by_javascript() {
+        let doc = |h: &str| Html::parse_document(h);
+        // header only, rows come later from a script
+        assert!(js_filled_tables(&doc("<table><thead><tr><th>Nama</th></tr></thead><tbody></tbody></table>")));
+        // DataTables with server-side data and no rows in the HTML
+        assert!(js_filled_tables(&doc("<div id=t></div><script>$('#t').DataTable({ajax: '/api/dosen'})</script>")));
+        // DataTables that only adds sorting to rows that are already there
+        assert!(!js_filled_tables(&doc("<table><tr><th>Nama</th></tr><tr><td>Budi</td></tr></table>\
+            <script>jQuery('table').DataTable({ajax: false}); var ajax_url='x';</script>")));
+        assert!(!js_filled_tables(&doc("<p>Tidak ada tabel</p>")));
     }
 
     #[test]
