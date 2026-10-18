@@ -36,6 +36,15 @@ def test_mixed_case_expansion_kept_as_written():
     assert "Internet of Things (IoT)" in expand_acronyms("Sistem IoT kampus.")
 
 
+
+def test_already_explained_acronym_is_not_expanded_again():
+    # "(PMPSTI)" right after the full name became "(Program Magister … (PMPSTI))"
+    text = "Kurikulum Program Magister Program Studi Teknologi Informasi (PMPSTI) 2022"
+    assert expand_acronyms(text) == text
+    text = "Minimal 36 SKS (Satuan Kredit Semester)."
+    assert expand_acronyms(text) == text
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for t in tests:

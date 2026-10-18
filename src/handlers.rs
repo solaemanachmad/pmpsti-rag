@@ -108,6 +108,96 @@ async fn embed_with_retry(
     Err("Embed failed after max retries".to_string())
 }
 
+// ── Document embeddings: one recipe, batched ───────────────────────────────
+const BATCH_EMBED_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents";
+
+/// The text embedded for a stored chunk: the document title, a blank line, the content.
+/// The SAME recipe as `document_text` in scripts/gemini_embed.py (used by ingest.py and
+/// regen_embeddings.py), so re-embedding a database reproduces what ingest stored.
+/// The title is also sent as Gemini's `title` field (RETRIEVAL_DOCUMENT only).
+fn document_embed_text(title: &str, content: &str) -> String {
+    if title.is_empty() { content.to_string() } else { format!("{title}\n\n{content}") }
+}
+
+/// Embed a document's chunks with `batchEmbedContents`, `EMBED_BATCH_SIZE` (default 50) per
+/// request — one call instead of one per chunk, which kept long pages past the proxy's
+/// 60 s limit. Retries 429/503 with backoff. A batch that still fails gets empty vectors:
+/// its chunks are saved without embeddings (still found by keyword search) and can be
+/// filled later with `scripts/regen_embeddings.py`, which uses the same recipe.
+async fn embed_documents(http: &reqwest::Client, gemini_key: &str, title: &str, chunks: &[String]) -> Vec<Vec<f32>> {
+    #[derive(serde::Deserialize)]
+    struct BatchResp { embeddings: Vec<Vals> }
+    #[derive(serde::Deserialize)]
+    struct Vals { values: Vec<f32> }
+
+    let batch_size: usize = std::env::var("EMBED_BATCH_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(50).max(1);
+    let batch_delay_ms: u64 = std::env::var("EMBED_BATCH_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+    let mut out: Vec<Vec<f32>> = Vec::with_capacity(chunks.len());
+
+    for (b, batch) in chunks.chunks(batch_size).enumerate() {
+        if b > 0 && batch_delay_ms > 0 {
+            sleep(std::time::Duration::from_millis(batch_delay_ms)).await;
+        }
+        let requests: Vec<serde_json::Value> = batch.iter().map(|c| {
+            let mut r = serde_json::json!({
+                "model": "models/gemini-embedding-001",
+                "content": { "parts": [{ "text": document_embed_text(title, c) }] },
+                "taskType": "RETRIEVAL_DOCUMENT",
+                "outputDimensionality": 768,
+            });
+            if !title.is_empty() {
+                r["title"] = serde_json::json!(title);
+            }
+            r
+        }).collect();
+        let body = serde_json::json!({ "requests": requests });
+
+        let mut vectors: Option<Vec<Vec<f32>>> = None;
+        for attempt in 0..=4u32 {
+            let resp = http.post(BATCH_EMBED_URL).header("x-goog-api-key", gemini_key).json(&body).send().await;
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    match r.json::<BatchResp>().await {
+                        Ok(d) if d.embeddings.len() == batch.len() => {
+                            vectors = Some(d.embeddings.into_iter().map(|e| e.values).collect());
+                        }
+                        Ok(d) => eprintln!("[embed] batch {b}: {} vectors for {} chunks", d.embeddings.len(), batch.len()),
+                        Err(e) => eprintln!("[embed] batch {b}: bad response: {e}"),
+                    }
+                    break;
+                }
+                Ok(r) if matches!(r.status().as_u16(), 429 | 503) && attempt < 4 => {
+                    let backoff = 2000u64 << attempt; // 2, 4, 8, 16 s
+                    eprintln!("[embed] batch {b}: Gemini {}, retry {}/4 after {backoff} ms", r.status(), attempt + 1);
+                    sleep(std::time::Duration::from_millis(backoff)).await;
+                }
+                Ok(r) => {
+                    let status = r.status();
+                    eprintln!("[embed] batch {b}: Gemini {status}: {}", r.text().await.unwrap_or_default().chars().take(300).collect::<String>());
+                    break;
+                }
+                Err(e) if attempt < 4 => {
+                    eprintln!("[embed] batch {b}: network error {e}, retrying");
+                    sleep(std::time::Duration::from_millis(1000 << attempt)).await;
+                }
+                Err(e) => {
+                    eprintln!("[embed] batch {b}: network error {e}");
+                    break;
+                }
+            }
+        }
+        match vectors {
+            Some(v) => out.extend(v),
+            None => {
+                eprintln!("[embed] batch {b}: saving {} chunks without embeddings", batch.len());
+                out.extend(std::iter::repeat_with(Vec::new).take(batch.len()));
+            }
+        }
+    }
+    out
+}
+
 // ── Chunking config (tune via env or change constants here) ────────────────
 /// Similarity threshold: kalimat dengan cosine similarity < nilai ini → split baru.
 /// Turunkan (e.g. 0.65) untuk chunk lebih kecil/granular,
@@ -439,7 +529,7 @@ pub struct AppState {
 //  MIDDLEWARE HELPER — ekstrak user dari JWT
 // ══════════════════════════════════════════════════════════════════
 
-fn require_auth(req: &HttpRequest, jwt_secret: &str) -> Result<JwtClaims, HttpResponse> {
+pub(crate) fn require_auth(req: &HttpRequest, jwt_secret: &str) -> Result<JwtClaims, HttpResponse> {
     // Coba baca dari httpOnly cookie dulu
     let token_from_cookie = req.cookie("auth_token").map(|c| c.value().to_string());
 
@@ -920,10 +1010,11 @@ pub async fn ask(
         sources:    relevant.iter().map(|c| ChatSource {
             title:      clean_source_title(&c.title, &c.subcategory),
             snippet:    c.snippet.clone(),
-            source_url: c.source_url.clone(),
+            source_url: crate::sources::citation_link(&c.source_url, &c.pages),
             category:   c.category.clone(),
             subcategory: c.subcategory.clone(),
             score:      c.score,
+            pages:      c.pages.clone(),
         }).collect(),
     });
     session.updated_at = now;
@@ -947,10 +1038,11 @@ pub async fn ask(
     let sources: Vec<SourceRef> = relevant.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
         snippet:    c.snippet.clone(),
-        source_url: c.source_url.clone(),
+        source_url: crate::sources::citation_link(&c.source_url, &c.pages),
         category:   c.category.clone(),
         subcategory: c.subcategory.clone(),
         score:      c.score,
+        pages:      c.pages.clone(),
     }).collect();
 
     HttpResponse::Ok().json(ApiSuccess::new(AskResponse {
@@ -1043,10 +1135,11 @@ pub async fn ask_public(
     let sources: Vec<SourceRef> = relevant.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
         snippet:    c.snippet.clone(),
-        source_url: c.source_url.clone(),
+        source_url: crate::sources::citation_link(&c.source_url, &c.pages),
         category:   c.category.clone(),
         subcategory: c.subcategory.clone(),
         score:      c.score,
+        pages:      c.pages.clone(),
     }).collect();
 
     HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({
@@ -1863,7 +1956,7 @@ fn extract_page(html: &str, url: &str, title_override: Option<String>) -> crate:
     // Title: the one given by the admin, else <title>, else the URL
     let page_title = scraper::Selector::parse("title").ok()
         .and_then(|sel| document.select(&sel).next())
-        .map(|e| e.text().collect::<String>().trim().to_string())
+        .map(|e| e.text().collect::<String>().replace('\u{a0}', " ").split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_default();
     let title = title_override
         .filter(|t| !t.is_empty())
@@ -1881,7 +1974,11 @@ fn extract_page(html: &str, url: &str, title_override: Option<String>) -> crate:
     let mut tables = reader::json_tables(&document);
     tables.extend(reader::html_tables(root));
 
-    reader::PageContent { title, text: reader::visible_text(root), tables }
+    // The main text is the sections' text, so the length check and the preview warnings
+    // look at exactly what gets chunked.
+    let sections = reader::sections(root);
+    let text = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
+    reader::PageContent { title, text, sections, tables }
 }
 
 /// Fetch a URL and turn it into a title and plain text (stages 1–3 of URL ingest).
@@ -1910,23 +2007,42 @@ async fn read_url(url: &str, title_override: Option<String>) -> Result<crate::re
     Ok(page)
 }
 
-/// All chunks for a page: its text chunked with the requested strategy, then every table
-/// chunked by `reader::table_chunks` (summary + rows with column names).
+/// All chunks for a page: each section's text, with acronyms expanded, chunked with the
+/// requested strategy and prefixed with its heading path, then every table chunked by
+/// `reader::table_chunks` (summary + rows with column names).
 async fn page_chunks(
     page:       &crate::reader::PageContent,
     strategy:   &crate::models::ChunkStrategy,
     http:       &reqwest::Client,
     gemini_key: &str,
 ) -> Result<(crate::models::ChunkStrategy, Vec<String>), HttpResponse> {
-    let (used, mut chunks) = if page.text.len() >= 50 {
-        chunk_text(&page.text, strategy, http, gemini_key).await?
-    } else {
-        (strategy.clone(), Vec::new())
-    };
+    let mut used = strategy.clone();
+    let mut chunks = Vec::new();
+    if page.text.len() >= 50 {
+        for (i, section) in page.sections.iter().enumerate() {
+            // Expand acronyms per section (first 2 uses each), so every section explains its own
+            let text = crate::enrich::expand_acronyms(&section.text, 2);
+            let (section_used, section_chunks) = chunk_text(&text, strategy, http, gemini_key).await?;
+            if i == 0 {
+                used = section_used; // reported in the preview; `auto` may differ per section
+            }
+            chunks.extend(with_heading_path(&section.path, section_chunks));
+        }
+    }
     for table in &page.tables {
         chunks.extend(crate::reader::table_chunks(&page.title, table, chunk_max_chars()));
     }
     Ok((used, chunks))
+}
+
+/// Put the heading path (e.g. "1 Pendahuluan > 1.1 Identitas Prodi") as the first line of
+/// every chunk of a section, so search, embedding and the LLM all see where the text is from.
+fn with_heading_path(path: &[String], chunks: Vec<String>) -> Vec<String> {
+    if path.is_empty() {
+        return chunks;
+    }
+    let heading = path.join(" > ");
+    chunks.into_iter().map(|c| format!("{heading}\n{c}")).collect()
 }
 
 /// Split text into chunks (stage 4), resolving `auto` to a concrete strategy first.
@@ -1962,6 +2078,46 @@ async fn chunk_text(
     };
 
     Ok((resolved_strategy, chunks_text))
+}
+
+/// One web page read and chunked for a source job (src/web_jobs.rs): the same reader,
+/// sections, acronyms and table chunks as Add from URL, with the `auto` strategy (which
+/// resolves to sentence/structural — no Gemini calls while chunking).
+pub(crate) struct WebPageChunks {
+    pub title:    String,
+    pub chunks:   Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub(crate) async fn read_and_chunk_page(url: &str) -> Result<WebPageChunks, String> {
+    let html = fetch_html_with_js(url).await?;
+    let page = extract_page(&html, url, None);
+    if page.text.len() < 50 && page.tables.is_empty() {
+        return Err("Konten terlalu pendek atau tidak bisa di-parse".into());
+    }
+    let http = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; PMPSTI-Bot/1.0)")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let (_, chunks) = page_chunks(&page, &crate::models::ChunkStrategy::Auto, &http, "").await
+        .map_err(|_| "Chunking gagal".to_string())?;
+    let warnings = crate::reader::quality_warnings(&page, &chunks, chunk_max_chars());
+    Ok(WebPageChunks { title: page.title, chunks, warnings })
+}
+
+/// Embeddings for a page's chunks with the shared recipe (title + content, RETRIEVAL_DOCUMENT).
+/// Failed batches come back as empty vectors (stored as NULL, still found by keyword search).
+pub(crate) async fn embed_page_chunks(title: &str, chunks: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
+    if key.is_empty() {
+        return Err("GEMINI_API_KEY tidak dikonfigurasi".into());
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(embed_documents(&http, &key, title, chunks).await)
 }
 
 /// Preview a URL ingest: read and chunk the page exactly like `admin_ingest_url`,
@@ -2000,6 +2156,8 @@ pub async fn admin_preview_url(
         "tables":      page.tables.iter().map(|t| serde_json::json!({
             "caption": t.caption, "headers": t.headers, "rows": t.rows.len(),
         })).collect::<Vec<_>>(),
+        "sections":    page.sections.len(),
+        "warnings":    crate::reader::quality_warnings(&page, &chunks, chunk_max_chars()),
         "chunk_count": chunks.len(),
         "chunks":      chunks.iter().enumerate().map(|(i, c)| serde_json::json!({
             "index": i, "chars": c.chars().count(), "text": c,
@@ -2047,19 +2205,11 @@ pub async fn admin_ingest_url(
     let subcategory = body.subcategory.clone().unwrap_or_else(|| "—".to_string());
     let document_id = format!("url-{}", uuid::Uuid::new_v4());
 
+    // 4. Embed all chunks (batched; failed batches are saved without embeddings)
+    let embeddings = embed_documents(&http, &gemini_key, &title, &chunks_text).await;
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
-    for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, EMBED_URL, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
-            Ok(v)  => v,
-            Err(e) => {
-                // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.
-                // Chunk tetap bisa dicari via fulltext search.
-                eprintln!("[ingest-url] Embed chunk {i} gagal ({}), simpan tanpa embedding", e);
-                vec![]
-            }
-        };
-
+    for (i, (chunk_text, embedding)) in chunks_text.iter().zip(embeddings).enumerate() {
         doc_chunks.push(DocumentChunk {
             document_id:   document_id.clone(),
             title:         title.clone(),
@@ -2124,19 +2274,11 @@ pub async fn admin_ingest_text(
     let subcategory= body.subcategory.clone().unwrap_or_else(|| "—".to_string());
     let document_id= format!("text-{}", uuid::Uuid::new_v4());
 
+    // Embed all chunks (batched, same recipe as URL ingest)
+    let embeddings = embed_documents(&http, &gemini_key, &title, &chunks_text).await;
     let mut doc_chunks: Vec<DocumentChunk> = Vec::new();
 
-    for (i, chunk_text) in chunks_text.iter().enumerate() {
-        let embedding = match embed_with_retry(&http, EMBED_URL, &gemini_key, chunk_text, "RETRIEVAL_DOCUMENT").await {
-            Ok(v)  => v,
-            Err(e) => {
-                // Kalau embed gagal (mis. 429 quota habis), simpan chunk tanpa embedding.
-                // Chunk tetap bisa dicari via fulltext search.
-                eprintln!("[ingest-text] Embed chunk {i} gagal ({}), simpan tanpa embedding", e);
-                vec![]
-            }
-        };
-
+    for (i, (chunk_text, embedding)) in chunks_text.iter().zip(embeddings).enumerate() {
         doc_chunks.push(DocumentChunk {
             document_id:   document_id.clone(),
             title:         title.clone(),
@@ -2164,7 +2306,7 @@ pub async fn admin_ingest_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{cookie_attributes, extract_page};
+    use super::{cookie_attributes, extract_page, with_heading_path};
 
     #[test]
     fn cookie_is_secure_except_on_local_http() {
@@ -2178,6 +2320,7 @@ mod tests {
     // Real pages saved on 2026-10-18, so parsing can be tested without the network.
     const TENAGA_PENDIDIK: &str = include_str!("../tests/fixtures/tenaga_pendidik.html");
     const D_TENDIK: &str = include_str!("../tests/fixtures/d_tendik.html");
+    const INTRODUCTION: &str = include_str!("../tests/fixtures/introduction.html");
 
     #[test]
     fn wordpress_page_reads_article_not_sidebar() {
@@ -2195,8 +2338,79 @@ mod tests {
     fn quarto_page_uses_page_title() {
         let page = extract_page(D_TENDIK, "https://mtiugm.github.io/panduan_pmpsti/appendix/d_tendik.html", None);
         assert!(page.title.starts_with("Lampiran D"), "unexpected title: {}", page.title);
+        // &nbsp; in <title> becomes a normal space ("1&nbsp; Pendahuluan" was stored with U+00A0)
+        let intro = extract_page(INTRODUCTION, "https://example.org/", None);
+        assert!(intro.title.starts_with("1 Pendahuluan"), "unexpected title: {:?}", intro.title);
         assert!(page.text.contains("Tabel D.1"));
         assert_eq!(page.tables.len(), 1);
         assert_eq!(page.tables[0].rows.len(), 40);
+    }
+
+    /// Chunks of a saved page as URL ingest makes them, without the network: sections →
+    /// acronyms → auto strategy (never semantic) → heading path, then table chunks.
+    fn offline_chunks(page: &crate::reader::PageContent) -> Vec<String> {
+        use crate::models::ChunkStrategy;
+        let (min, max) = (super::chunk_min_chars(), super::chunk_max_chars());
+        let mut chunks = Vec::new();
+        for section in &page.sections {
+            let text = crate::enrich::expand_acronyms(&section.text, 2);
+            let parts = match ChunkStrategy::detect(&text) {
+                ChunkStrategy::Structural => super::structural_chunk(&text, min, max),
+                _ => super::sentence_chunk(&text, min, max),
+            };
+            chunks.extend(with_heading_path(&section.path, parts));
+        }
+        for table in &page.tables {
+            chunks.extend(crate::reader::table_chunks(&page.title, table, max));
+        }
+        chunks
+    }
+
+    /// Prints the first chunks and the preview warnings of each saved page. Run with:
+    /// `cargo test show_guidebook_chunks -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints example output; run explicitly"]
+    fn show_guidebook_chunks() {
+        for (name, html, url) in [
+            ("introduction", INTRODUCTION, "https://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html"),
+            ("d_tendik", D_TENDIK, "https://mtiugm.github.io/panduan_pmpsti/appendix/d_tendik.html"),
+            ("c_ewmp", include_str!("../tests/fixtures/c_ewmp.html"), "https://mtiugm.github.io/panduan_pmpsti/appendix/c_ewmp.html"),
+            ("tenaga_pendidik", TENAGA_PENDIDIK, "https://jteti.ugm.ac.id/tenaga-pendidik/"),
+        ] {
+            let page = extract_page(html, url, None);
+            let chunks = offline_chunks(&page);
+            println!("\n================ {name}: {} sections, {} chunks ================", page.sections.len(), chunks.len());
+            for (i, c) in chunks.iter().take(3).enumerate() {
+                println!("--- chunk {} ({} chars)\n{}\n", i + 1, c.len(), c.chars().take(300).collect::<String>());
+            }
+            for c in chunks.iter().filter(|c| c.chars().count() < 80 || c.chars().count() > 1500) {
+                println!("  flagged ({} chars): {}", c.chars().count(), c.chars().take(160).collect::<String>().replace('\n', " / "));
+            }
+            println!("warnings: {:?}", crate::reader::quality_warnings(&page, &chunks, super::chunk_max_chars()));
+        }
+    }
+
+    #[test]
+    fn saved_pages_have_no_quality_warnings() {
+        for (name, html) in [("introduction", INTRODUCTION), ("d_tendik", D_TENDIK)] {
+            let page = extract_page(html, "https://example.org/", None);
+            let warnings = crate::reader::quality_warnings(&page, &offline_chunks(&page), super::chunk_max_chars());
+            assert!(warnings.is_empty(), "{name}: {warnings:?}");
+        }
+    }
+
+    #[test]
+    fn embed_text_is_title_blank_line_content() {
+        // Must match document_text() in scripts/gemini_embed.py
+        assert_eq!(super::document_embed_text("Beban Dosen", "Nama: X"), "Beban Dosen\n\nNama: X");
+        assert_eq!(super::document_embed_text("", "Nama: X"), "Nama: X");
+    }
+
+    #[test]
+    fn chunks_start_with_heading_path() {
+        let path = vec!["1 Pendahuluan".to_string(), "1.1 Identitas Prodi".to_string()];
+        let chunks = with_heading_path(&path, vec!["Nama ...".into(), "Visi ...".into()]);
+        assert_eq!(chunks, ["1 Pendahuluan > 1.1 Identitas Prodi\nNama ...", "1 Pendahuluan > 1.1 Identitas Prodi\nVisi ..."]);
+        assert_eq!(with_heading_path(&[], vec!["text".into()]), ["text"]);
     }
 }

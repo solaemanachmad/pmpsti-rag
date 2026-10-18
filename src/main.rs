@@ -1,11 +1,16 @@
 mod auth;
 mod db;
 mod email;
+mod enrich;
 mod handlers;
 mod models;
 mod rag;
 mod reader;
 mod search;
+mod site;
+mod sources;
+mod sources_api;
+mod web_jobs;
 
 use actix_web::{middleware, web, App, HttpServer, HttpResponse};
 use dashmap::DashMap;
@@ -146,6 +151,9 @@ async fn main() -> std::io::Result<()> {
     let addr = format!("{}:{}", cfg.host, cfg.port);
     log::info!("Server siap di http://{}", addr);
 
+    // Background processing of web sources (Admin → Sources); PDFs go to the GitHub worker
+    web_jobs::spawn(db.pool().clone());
+
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
@@ -229,6 +237,20 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/faq/pins",            web::post().to(handlers::admin_faq_pin))
                     .route("/admin/faq/pins/{id}",       web::delete().to(handlers::admin_faq_unpin))
                     .route("/admin/faq/top",             web::get().to(handlers::admin_faq_top))
+                    // Link-based sources (Drive / website PDFs) and draft review
+                    .route("/admin/sources",                web::get().to(sources_api::list_sources))
+                    .route("/admin/sources",                web::post().to(sources_api::create_source))
+                    .route("/admin/sources/resolve",        web::post().to(sources_api::resolve_link))
+                    .route("/admin/sources/{id}",           web::delete().to(sources_api::delete_source))
+                    .route("/admin/sources/{id}/pages",     web::post().to(sources_api::add_pages))
+                    .route("/admin/sources/{id}/files",     web::get().to(sources_api::list_files))
+                    .route("/admin/sources/{id}/approve-all", web::post().to(sources_api::approve_all))
+                    .route("/admin/sources/{id}/check",     web::post().to(sources_api::check_source))
+                    .route("/admin/sources/{id}/jobs",      web::get().to(sources_api::list_jobs))
+                    .route("/admin/drafts",                 web::get().to(sources_api::list_drafts))
+                    .route("/admin/drafts/{id}/chunks",     web::get().to(sources_api::draft_chunks))
+                    .route("/admin/drafts/{id}/approve",    web::post().to(sources_api::approve_draft))
+                    .route("/admin/drafts/{id}/reject",     web::post().to(sources_api::reject_draft))
             )
     })
     .bind(&addr)?

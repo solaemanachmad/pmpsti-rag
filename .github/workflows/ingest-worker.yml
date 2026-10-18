@@ -1,0 +1,71 @@
+# PDF ingest worker — processes sources added in Admin → Sources (Google Drive / website PDFs)
+# and writes DRAFT chunks for admin review. See docs/design/ingest-from-links.md.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   DATABASE_URL    Neon connection string the backend uses (production)
+#   GEMINI_API_KEY  embeddings + figure descriptions
+#   GOOGLE_API_KEY  Google Cloud API key with the Drive API enabled (public files only)
+# Optional repository variables: GEMINI_MODEL (default gemini-3.5-flash-lite),
+# LLM_FALLBACK_MODELS (used when the daily quota is gone; default gemini-3.1-flash-lite)
+name: Ingest worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_id:
+        description: "Only queue this source id (empty = process the queue)"
+        required: false
+        default: ""
+      figures:
+        description: "Describe figures with Gemini"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "17 19 * * *"   # daily 02:17 WIB: re-check sources for changed files
+
+concurrency:
+  group: ingest-worker
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/worker/requirements.txt
+      - name: Install
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-ind
+          pip install -r scripts/worker/requirements.txt
+      - name: Unit tests (no database, no network)
+        working-directory: scripts
+        run: python -m pytest -q worker/tests
+      - name: Run worker
+        working-directory: scripts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
+          LLM_FALLBACK_MODELS: ${{ vars.LLM_FALLBACK_MODELS || 'gemini-3.1-flash-lite' }}
+          SOURCE_ID: ${{ github.event.inputs.source_id }}
+          FIGURES: ${{ github.event_name == 'schedule' || github.event.inputs.figures == 'true' }}
+        run: |
+          args="--allow-production"
+          if [ "${{ github.event_name }}" = "schedule" ]; then args="$args --recheck"; fi
+          if [ -n "$SOURCE_ID" ]; then args="$args --source-id $SOURCE_ID"; fi
+          if [ "$FIGURES" != "true" ]; then args="$args --no-figures"; fi
+          python -m worker $args
+
+      - name: Wake the backend for web-page jobs
+        # Web sources (sites / pages) are read by the backend itself; the scheduled re-check above
+        # queues them, and the backend picks them up as soon as it is awake (Render free sleeps).
+        if: always()
+        run: curl -fsS --max-time 120 "${BACKEND_URL:-https://pmpsti-rag.onrender.com}/health" || true
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL }}

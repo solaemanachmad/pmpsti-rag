@@ -150,7 +150,10 @@ export const admin = {
     ),
 
   // Document ingest
-  ingestUrl: (payload: { url: string; title?: string; category?: string; subcategory?: string; chunk_strategy?: string }) =>
+  /** Read and chunk a URL like ingestUrl, but embed and save nothing. */
+  previewUrl: (payload: IngestUrlPayload) =>
+    request<UrlPreview>('/admin/documents/preview-url', { method: 'POST', body: JSON.stringify(payload) }),
+  ingestUrl: (payload: IngestUrlPayload) =>
     request<{ document_id: string; chunks: number; title: string }>(
       '/admin/documents/ingest-url',
       { method: 'POST', body: JSON.stringify(payload) }
@@ -169,8 +172,130 @@ export const admin = {
 
   // Query logs
   queryLogs: (limit = 50, offset = 0) =>
-    request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?limit=${limit}&offset=${offset}`)
+    request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?limit=${limit}&offset=${offset}`),
+
+  // Sources from links (Google Drive / website PDFs) and draft review
+  sources: () => request<SourceRow[]>('/admin/sources'),
+  createSource: (payload: NewSourcePayload) =>
+    request<{ id: number; kind: string; url: string; message: string }>('/admin/sources', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+  checkSource: (id: number) =>
+    request<{ queued: boolean; message?: string }>(`/admin/sources/${id}/check`, { method: 'POST' }),
+  deleteSource: (id: number) =>
+    request<{ deleted: boolean }>(`/admin/sources/${id}`, { method: 'DELETE' }),
+  sourceJobs: (id: number) => request<IngestJob[]>(`/admin/sources/${id}/jobs`),
+  sourceFiles: (id: number) => request<SourceFile[]>(`/admin/sources/${id}/files`),
+  resolveLink: (url: string) =>
+    request<ResolvedLink>('/admin/sources/resolve', { method: 'POST', body: JSON.stringify({ url }) }),
+  addPages: (id: number, urls: string[]) =>
+    request<{ added: number; message: string }>(`/admin/sources/${id}/pages`, {
+      method: 'POST',
+      body: JSON.stringify({ urls })
+    }),
+  approveAll: (id: number) =>
+    request<{ approved_documents: number; activated_chunks: number; archived_documents: string[] }>(
+      `/admin/sources/${id}/approve-all`, { method: 'POST' }),
+  drafts: () => request<DraftDocument[]>('/admin/drafts'),
+  draftChunks: (document_id: string) =>
+    request<DraftChunk[]>(`/admin/drafts/${encodeURIComponent(document_id)}/chunks`),
+  approveDraft: (document_id: string) =>
+    request<{ activated_chunks: number; archived_documents: string[] }>(
+      `/admin/drafts/${encodeURIComponent(document_id)}/approve`, { method: 'POST' }),
+  rejectDraft: (document_id: string) =>
+    request<{ deleted_chunks: number }>(
+      `/admin/drafts/${encodeURIComponent(document_id)}/reject`, { method: 'POST' })
 };
+
+export type SourceKind = 'drive_folder' | 'drive_file' | 'web_pdf' | 'web_site' | 'web_page';
+export interface ResolvedLink {
+  kind: SourceKind;
+  url: string;
+  page_title?: string;
+  /** the link could not be opened; the choice is guessed from the address */
+  warning?: string;
+  /** the page lies under a site that is already a source */
+  parent?: { id: number; root: string; title: string };
+  /** the page is already part of a source */
+  existing?: { id: number; title: string };
+  /** guessed site the page belongs to (offered to the admin) */
+  suggestion?: { root: string; site_name: string } | null;
+}
+export interface SourceFile {
+  id: number;
+  name: string;
+  external_id: string;
+  citation_url: string;
+  status: 'pending' | 'draft' | 'active' | 'rejected' | 'archived' | 'missing' | 'duplicate' | 'error' | string;
+  document_id: string;
+  updated_at: string | null;
+}
+export interface SourceRow {
+  id: number;
+  kind: SourceKind;
+  url: string;
+  /** web_site: 'manual' = only registered pages, 'auto' = also find new pages under the root */
+  discover: 'manual' | 'auto';
+  title: string;
+  category: string;
+  subcategory: string;
+  version_label: string;
+  valid_from: string | null;
+  supersedes_id: number | null;
+  auto_check: boolean;
+  last_checked: string | null;
+  created_at: string;
+  file_count: number;
+  active_files: number;
+  draft_files: number;
+  last_job_state: 'queued' | 'running' | 'done' | 'failed' | null;
+  last_job_log: string | null;
+}
+export interface NewSourcePayload {
+  url: string;
+  title?: string;
+  category?: string;
+  subcategory?: string;
+  version_label?: string;
+  valid_from?: string;
+  supersedes_id?: number | null;
+  auto_check?: boolean;
+  kind?: 'web_site' | 'web_page' | 'web_pdf';
+  pages?: string[];
+  discover?: 'manual' | 'auto';
+}
+export interface IngestJob {
+  id: number;
+  source_id: number;
+  file_name: string | null;
+  state: string;
+  log: string;
+  stats: Record<string, unknown> | null;
+  created_at: string;
+  finished_at: string | null;
+}
+export interface DraftDocument {
+  document_id: string;
+  title: string;
+  source_id: number | null;
+  source_title: string | null;
+  version_label: string | null;
+  citation_url: string;
+  chunk_count: number;
+  figure_chunks: number;
+  table_chunks: number;
+  page_count: number;
+  job_log: string | null;
+  replaces: string[];
+}
+export interface DraftChunk {
+  id: number;
+  chunk_index: number | null;
+  page_number: number | null;
+  chunk_kind: 'text' | 'table' | 'figure' | string;
+  content: string;
+}
 
 // ── Streaming ask ──
 export function askStream(
@@ -248,6 +373,8 @@ export interface SourceRef {
   category: string;
   subcategory?: string;
   score: number;
+  /** Pages of a PDF document used for the answer (empty for web pages) */
+  pages?: number[];
 }
 export interface SessionListItem {
   id: string;
@@ -270,6 +397,7 @@ export interface ChatSource {
   category: string;
   subcategory?: string;
   score: number;
+  pages?: number[];
 }
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -331,7 +459,13 @@ export interface AdminDocument {
   category: string;
   subcategory: string;
   source_url: string;
+  /** active = searchable, draft = waiting for review, archived = replaced by a newer version */
+  status?: 'active' | 'draft' | 'archived';
   chunk_count: number;
+  source_id?: number | null;
+  source_title?: string;
+  source_kind?: SourceKind | '';
+  source_root?: string;
 }
 export interface IngestResponse {
   document_id: string;
@@ -348,6 +482,27 @@ export interface AdminChunk {
   subcategory: string;
   source_url: string;
   created_at: string;
+}
+
+export interface IngestUrlPayload {
+  url: string;
+  title?: string;
+  category?: string;
+  subcategory?: string;
+  chunk_strategy?: string;
+}
+
+export interface UrlPreview {
+  url: string;
+  title: string;
+  strategy: string;
+  text_chars: number;
+  sections: number;
+  tables: { caption: string; headers: string[]; rows: number }[];
+  /** Plain-English quality warnings; empty when nothing looks wrong. */
+  warnings: string[];
+  chunk_count: number;
+  chunks: { index: number; chars: number; text: string }[];
 }
 
 export interface AdminQueryLog {

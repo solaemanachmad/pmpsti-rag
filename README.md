@@ -87,6 +87,8 @@ JWT_SECRET=replace-with-a-long-random-secret
 GEMINI_API_KEY=...
 LLM_BACKEND=gemini
 GEMINI_MODEL=gemini-3.5-flash-lite
+# Used in order when the model above hits its quota (429); default gemini-3.1-flash-lite
+# LLM_FALLBACK_MODELS=gemini-3.1-flash-lite
 
 # Alternative LLMs:
 # Ollama (local)
@@ -198,6 +200,65 @@ Rows are matched by `id` **and** content (title + content). Rows that differ, or
 
 ---
 
+## 7. Sources: web pages, website PDFs and Google Drive
+
+All content is added in **Admin → Sources** as a **link**. New and changed content is saved as
+**drafts**; drafts are not used in answers until an admin approves them in the same page.
+**Admin → Documents** is the library of what is indexed, grouped per source.
+Design: [`docs/design/ingest-from-links.md`](docs/design/ingest-from-links.md).
+
+| Source type | Example | Read by |
+|---|---|---|
+| Website (several pages) | `https://mtiugm.github.io/panduan_pmpsti/` + chosen pages | backend (`src/web_jobs.rs`, same reader as before) |
+| Web page (standalone) | `https://jteti.ugm.ac.id/tenaga-pendidik/` | backend |
+| Website PDF | `https://jteti.ugm.ac.id/…/panduan.pdf` | Python worker |
+| Google Drive file / folder | `https://drive.google.com/drive/folders/<id>` | Python worker |
+
+**Websites.** Paste one or more page links. If they lie under a site that is already a source, they are
+added to it; otherwise the form suggests the site (from the page's home link and title) and you choose
+*part of this website* or *standalone page*. A site source keeps **one document per page** (each page is
+its own citation) and has two modes: **only the pages you add** (add more later under *Pages*), or
+**also find all pages under the root** (sitemap.xml, else links between pages). Pages ingested earlier
+with Add from URL or `ingest_urls.py` are **replaced (archived)** when their managed version is approved.
+
+Drive files must be shared as **Anyone with the link can view**. If the same PDF is on Drive and on
+the website, add both: the file is stored once and answers cite the website link.
+
+### Lifecycle
+
+```
+Add source → job queued → backend (web pages) or worker (PDFs): read → chunks → embeddings → DRAFT
+          → Admin → Sources → review → Approve / Approve all (active; older version archived) / Reject
+Daily re-check: changed page/file → new draft → review again. Unchanged content costs nothing.
+```
+
+### Run the worker
+
+Web pages are processed by the backend right away. PDFs are processed by the worker, which runs in
+**GitHub Actions** (`.github/workflows/ingest-worker.yml`): daily, and on demand
+from the Actions tab ("Ingest worker" → Run workflow). Repository secrets: `DATABASE_URL`,
+`GEMINI_API_KEY`, `GOOGLE_API_KEY` (a Google Cloud API key with the **Google Drive API** enabled).
+
+To start it right after an admin adds a source, set on the backend (Render):
+`GITHUB_REPO=solaemanachmad/pmpsti-rag` and `GITHUB_WORKER_TOKEN` (fine-grained token, this repo only,
+permission *Actions: Read and write*). Without them, new sources wait for the daily run.
+
+Locally (from `scripts/`, with `DATABASE_URL` pointing to a Neon **test** branch):
+
+```bash
+pip install -r worker/requirements.txt
+python -m worker --file "../docs/panduan akademik/Buku Panduan Akademik MTI 2022.pdf" --no-figures  # preview only, no database
+python -m worker                    # process queued jobs
+python -m worker --source-id 3      # queue + process one source
+python -m pytest -q worker/tests    # tests (integration test needs TEST_DATABASE_URL to a throwaway DB)
+```
+
+Locally the worker needs `PROD_DATABASE_URL` in the root `.env` (so it recognises production) and refuses
+to write to that database unless `--allow-production` is given. The GitHub workflow passes the flag;
+drafts are not searchable until an admin approves them.
+
+---
+
 ## Code and database workflow
 
 There are **two separate flows**: one for **code** (Git, GitHub, Vercel) and one for **data** (Neon). Normal deployments only use the code flow.
@@ -222,7 +283,7 @@ create branch → commit → push → open PR → test Preview → merge into ma
    ```
 3. **Open a pull request** into `main` on GitHub (the *Compare & pull request* button).
 4. **Test the Preview.** Vercel builds a Preview URL for the branch and links it in the PR. Check it on both phone and laptop.
-5. **Merge into `main`**: *Merge pull request* → *Confirm merge*. Vercel deploys to Production automatically.
+5. **Merge into `main`**: *Merge pull request* → *Confirm merge*. Vercel deploys to Production automatically. Once the deploy is live, run the [smoke check](#smoke-check-the-live-site).
 6. **Delete the branch**: click *Delete branch* on the PR, then clean up locally:
    ```bash
    git switch main && git pull
@@ -302,6 +363,24 @@ SELECT id, title, updated_at FROM chat_sessions ORDER BY updated_at DESC LIMIT 1
 SELECT COUNT(*) FROM chunks;
 ```
 
+### Smoke check the live site
+
+`scripts/smoke_check.py` logs in through the frontend's `/api` proxy, calls `/api/auth/me` with the returned `auth_token` cookie, and checks that a document id containing `%2F` still reaches its backend route. It is read-only and needs only the Python standard library. Run it after every Production deploy, or against a Preview URL before merging:
+
+```bash
+cd scripts
+python smoke_check.py                                       # https://pmpsti-rag.vercel.app
+python smoke_check.py --base-url https://<preview>.vercel.app
+```
+
+Put a real account's credentials in `SMOKE_EMAIL` / `SMOKE_PASSWORD` (environment or root `.env`; never commit them). Five failed logins lock the login for 15 minutes, so fix wrong credentials before retrying. A failing check means:
+
+| Check | Failure | Likely cause |
+|---|---|---|
+| `login` | no `auth_token` cookie | the proxy dropped `Set-Cookie`, or the frontend calls the backend directly instead of `/api` |
+| `auth/me` | 401 "Token tidak ditemukan" | the cookie is not sent back (third-party cookie, e.g. `PUBLIC_API_URL` pointing at Render) |
+| `encoded id route` | empty 404 | the proxy decoded `%2F` into `/` (deleting documents like `appendix/f_org` fails) |
+
 ### Reset a user's password
 
 Passwords are hashed with Argon2, so they cannot be changed directly in psql. Use **Forgot password** on the sign-in page (requires email to be configured), or set `ADMIN_EMAIL` / `ADMIN_PASSWORD` for the admin account and restart the backend.
@@ -341,6 +420,7 @@ pmpsti-rag/
 │   ├── gemini_embed.py      # Gemini embedding helper (shared by scripts)
 │   ├── regen_embeddings.py  # Re-embed documents
 │   ├── copy_embeddings.py   # Copy embeddings between databases
+│   ├── smoke_check.py       # Live login + /api proxy check
 │   └── requirements.txt
 ├── docs/                    # Documents to ingest
 ├── .env                     # Configuration (not committed)

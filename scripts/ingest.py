@@ -46,8 +46,8 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 from pgvector.psycopg2 import register_vector
 from PIL import Image
 from psycopg2.extras import execute_values
-from text_enrichment import enrich_text, enrich_chunk
-from gemini_embed import GeminiEmbeddings
+from text_enrichment import enrich_text
+from gemini_embed import GeminiEmbeddings, document_text
 
 # ──────────────────────────────────────────────────────────────────
 #  KONFIGURASI
@@ -313,9 +313,10 @@ def chunks_to_records(
         ]
         hierarchy_str = " > ".join(hierarchy)
 
-        # Teks + breadcrumb untuk embedding (tanpa prefix E5 — tidak dipakai Gemini)
-        text_for_embed = enrich_chunk(text_content, metadata, document_id)
         title = f"{document_id} ({hierarchy_str})" if hierarchy_str else document_id
+        # Same embedding recipe as the Rust URL ingest and regen_embeddings.py:
+        # title (incl. the heading path) + blank line + content
+        text_for_embed = document_text(title, text_content)
 
         texts_to_embed.append(text_for_embed)
         db_records.append([
@@ -332,7 +333,8 @@ def embed_and_insert(conn, texts_to_embed: list[str], db_records: list[list]):
     if not texts_to_embed:
         return
     print(f"  Embedding {len(texts_to_embed)} chunks (batch)...")
-    vectors = embeddings_model.embed_documents(texts_to_embed)
+    titles = [r[1] for r in db_records]  # also sent as Gemini's `title` field
+    vectors = embeddings_model.embed(texts_to_embed, "RETRIEVAL_DOCUMENT", titles=titles)
     for i, vec in enumerate(vectors):
         db_records[i][8] = vec
     bulk_insert(conn, db_records)

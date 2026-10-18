@@ -1,0 +1,32 @@
+# E6 corpus: the same 25 documents as E5 (research/data/corpus_2026-10-18.json), all ingested
+# through the Rust URL pipeline with scripts/ingest_urls.py.
+# Columns (tab-separated): url, title (empty = page's own title), category, subcategory.
+# appendix/a_cooperation replaces E5's hand-typed text summary of the same page.
+# Not in E5, so left out (E7 "full guidebook"): index, front/c_glossary, appendix/b_lecturers,
+# appendix/e_facilities.
+url	title	category	subcategory
+https://mtiugm.github.io/panduan_pmpsti/front/a_editor.html		Panduan	Pendahuluan
+https://mtiugm.github.io/panduan_pmpsti/front/b_preface.html		Panduan	Pendahuluan
+https://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html		Panduan	Pendahuluan
+https://mtiugm.github.io/panduan_pmpsti/chapter2/curricula.html		Panduan	Kurikulum
+https://mtiugm.github.io/panduan_pmpsti/chapter4/thesis.html		Panduan	Tesis
+https://mtiugm.github.io/panduan_pmpsti/chapter6/sop.html		Panduan	Kelulusan dan Wisuda
+https://mtiugm.github.io/panduan_pmpsti/chapter7/services.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/absence/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/gap/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/attendance/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/completion_letter/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/judicium_letter/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/makeup_exam/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/thesis_amanment/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/study_extend/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/ethic_clearance/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/graduation_doc/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/skpi/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/chapter7/correspondence/recomendation_letter/index.html		Panduan	Layanan Persuratan
+https://mtiugm.github.io/panduan_pmpsti/appendix/f_org.html		Informasi	Pengelolaan Program Studi
+https://mtiugm.github.io/panduan_pmpsti/appendix/h_kbk.html		Informasi	Kelompok Bidang Keahlian
+https://mtiugm.github.io/panduan_pmpsti/appendix/a_cooperation.html		Informasi	Kerja Sama
+https://mtiugm.github.io/panduan_pmpsti/appendix/c_ewmp.html	Beban Dosen	Informasi	Rata-Rata Beban Dosen
+https://mtiugm.github.io/panduan_pmpsti/appendix/d_tendik.html	Tenaga Kependidikan	Informasi	Tenaga Kependidikan
+https://jteti.ugm.ac.id/tenaga-pendidik/	Tenaga Pendidik	Website	Profil

@@ -9,7 +9,7 @@
   import Modal from '$lib/components/ui/Modal.svelte';
   import LoadingState from '$lib/components/ui/LoadingState.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
-  import { Loader2, Trash2, RefreshCw, Globe, ChevronDown, Pencil, Search, FileText, ExternalLink, Layers } from 'lucide-svelte';
+  import { Loader2, Trash2, RefreshCw, ChevronDown, Pencil, Search, FileText, ExternalLink, Layers, FolderSync, Network } from 'lucide-svelte';
 
   let documents: AdminDocument[] = [];
   let loading = false;
@@ -17,19 +17,6 @@
   let notice = '';
   let search = '';
   let category = '';
-
-  // Ingest
-  let showIngest = false;
-  let ingestUrl = ''; let ingestTitle = ''; let ingestCategory = ''; let ingestSubcategory = '';
-  let ingestChunkStrategy = 'auto';
-  let ingestLoading = false; let ingestError = '';
-
-  const chunkStrategyOptions = [
-    { value: 'auto',       label: 'Auto',       desc: 'Detects the best strategy from the content (recommended).' },
-    { value: 'sentence',   label: 'Sentence',   desc: 'Best for articles and prose. Uses no Gemini quota while chunking.' },
-    { value: 'structural', label: 'Structural', desc: 'Best for numbered lists, tables and staff directories.' },
-    { value: 'semantic',   label: 'Semantic',   desc: 'Most accurate, but uses more Gemini quota.' }
-  ];
 
   // Chunks
   let expandedDoc: string | null = null;
@@ -103,85 +90,43 @@
     finally { savingDoc = false; }
   }
 
-  function openIngest() {
-    ingestError = '';
-    showIngest = true;
-  }
-
-  async function doIngest() {
-    if (!ingestUrl.trim()) { ingestError = 'URL is required.'; return; }
-    ingestLoading = true; ingestError = ''; notice = '';
-    try {
-      const res = await admin.ingestUrl({
-        url: ingestUrl.trim(),
-        title: ingestTitle.trim() || undefined,
-        category: ingestCategory.trim() || undefined,
-        subcategory: ingestSubcategory.trim() || undefined,
-        chunk_strategy: ingestChunkStrategy
-      });
-      notice = `Indexed “${res.title}” — ${res.chunks} chunks.`;
-      ingestUrl = ingestTitle = ingestCategory = ingestSubcategory = '';
-      ingestChunkStrategy = 'auto';
-      showIngest = false;
-      await loadDocs();
-    } catch (e) { ingestError = errorMessage(e); }
-    finally { ingestLoading = false; }
-  }
-
   $: categories = [...new Set(documents.map(d => d.category).filter(Boolean))].sort();
-  $: totalChunks = documents.reduce((n, d) => n + (d.chunk_count ?? 0), 0);
+  $: totalChunks = documents.filter(d => (d.status ?? 'active') === 'active').reduce((n, d) => n + (d.chunk_count ?? 0), 0);
+  $: activeCount = documents.filter(d => (d.status ?? 'active') === 'active').length;
+
+  // One group per source (a website with its pages, a Drive folder with its PDFs);
+  // documents added before sources existed are grouped as "Added manually".
+  interface DocGroup { key: string; title: string; kind: string; root: string; docs: AdminDocument[] }
+  $: groups = filtered.reduce<DocGroup[]>((acc, d) => {
+    const key = d.source_id ? `src-${d.source_id}` : 'manual';
+    let g = acc.find(x => x.key === key);
+    if (!g) {
+      g = d.source_id
+        ? { key, title: d.source_title || d.source_root || 'Source', kind: d.source_kind ?? '', root: d.source_root ?? '', docs: [] }
+        : { key, title: 'Added manually (before Sources)', kind: '', root: '', docs: [] };
+      acc.push(g);
+    }
+    g.docs.push(d);
+    return acc;
+  }, []).sort((a, b) => (a.key === 'manual' ? 1 : b.key === 'manual' ? -1 : a.title.localeCompare(b.title)));
   $: q = search.trim().toLowerCase();
+  let showArchived = false;
+  function reviewCount(g: DocGroup): number {
+    return new Set(g.docs.filter(d => d.status === 'draft').map(d => d.source_url || d.document_id)).size;
+  }
+  /** active documents in a group, one per address (versions and drafts are not counted twice) */
+  function liveCount(g: DocGroup): number {
+    return new Set(g.docs.filter(d => d.status === 'active').map(d => d.source_url || d.document_id)).size;
+  }
+  $: archivedCount = documents.filter(d => d.status === 'archived').length;
   $: filtered = documents.filter(d =>
+    (showArchived || d.status !== 'archived') &&
     (!category || d.category === category) &&
     (!q || [d.title, d.source_url, d.category, d.subcategory].some(v => v?.toLowerCase().includes(q)))
   );
 </script>
 
 <svelte:head><title>Documents · Admin</title></svelte:head>
-
-<!-- Ingest modal -->
-<Modal open={showIngest} title="Add a source from URL" size="lg" on:close={() => !ingestLoading && (showIngest = false)}>
-  <form id="ingest" on:submit|preventDefault={doIngest} class="space-y-4">
-    <div>
-      <label for="ingest-url" class="label">URL</label>
-      <input id="ingest-url" bind:value={ingestUrl} type="url" placeholder="https://example.ugm.ac.id/page" class="input" required />
-    </div>
-    <div class="grid sm:grid-cols-3 gap-3">
-      <div>
-        <label for="ingest-title" class="label">Title <span class="font-normal opacity-70">(optional)</span></label>
-        <input id="ingest-title" bind:value={ingestTitle} placeholder="Auto-detected" class="input" />
-      </div>
-      <div>
-        <label for="ingest-category" class="label">Category</label>
-        <input id="ingest-category" bind:value={ingestCategory} placeholder="e.g. Academic" class="input" list="doc-categories" />
-      </div>
-      <div>
-        <label for="ingest-subcategory" class="label">Subcategory</label>
-        <input id="ingest-subcategory" bind:value={ingestSubcategory} placeholder="e.g. Curriculum" class="input" />
-      </div>
-    </div>
-    <fieldset>
-      <legend class="label">Chunking strategy</legend>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {#each chunkStrategyOptions as opt}
-          <label class="flex items-center justify-center h-10 rounded-lg border text-sm font-semibold cursor-pointer transition-colors
-                        {ingestChunkStrategy === opt.value ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:border-primary/40 hover:text-foreground'}">
-            <input type="radio" class="sr-only" bind:group={ingestChunkStrategy} value={opt.value} />
-            {opt.label}
-          </label>
-        {/each}
-      </div>
-      <p class="text-xs text-muted-foreground mt-2">{chunkStrategyOptions.find(o => o.value === ingestChunkStrategy)?.desc}</p>
-    </fieldset>
-    {#if ingestError}<Alert>{ingestError}</Alert>{/if}
-  </form>
-  <svelte:fragment slot="footer">
-    <button type="button" class="btn-outline" disabled={ingestLoading} on:click={() => (showIngest = false)}>Cancel</button>
-    <button type="submit" form="ingest" class="btn-primary" disabled={ingestLoading}>
-      {#if ingestLoading}<Loader2 size={15} class="animate-spin" /> Processing…{:else}<Globe size={15} /> Fetch & index{/if}
-    </button>
-  </svelte:fragment>
-</Modal>
 
 <!-- Edit modal -->
 <Modal open={!!editing} title="Edit document" on:close={() => (editing = null)}>
@@ -214,11 +159,11 @@
   {#each categories as c}<option value={c}></option>{/each}
 </datalist>
 
-<PageHeader title="Documents" description="{documents.length} documents · {totalChunks.toLocaleString('en')} chunks indexed">
+<PageHeader title="Documents" description="{activeCount} documents · {totalChunks.toLocaleString('en')} chunks used in answers. Add or update content in Sources.">
   <button on:click={refresh} class="btn-outline" disabled={loading}>
     <RefreshCw size={15} class={loading ? 'animate-spin' : ''} /> <span class="hidden sm:inline">Refresh</span>
   </button>
-  <button on:click={openIngest} class="btn-primary"><Globe size={15} /> Add from URL</button>
+  <a href="/admin/sources" class="btn-primary"><FolderSync size={15} /> Add in Sources</a>
 </PageHeader>
 
 <div class="space-y-4">
@@ -234,6 +179,11 @@
       <option value="">All categories</option>
       {#each categories as c}<option value={c}>{c}</option>{/each}
     </select>
+    {#if archivedCount}
+      <label class="flex items-center gap-2 text-sm text-muted-foreground shrink-0">
+        <input type="checkbox" bind:checked={showArchived} class="rounded border" /> Show archived ({archivedCount})
+      </label>
+    {/if}
   </div>
 
   {#if loading && documents.length === 0}
@@ -241,11 +191,19 @@
   {:else if filtered.length === 0}
     <div class="card">
       <EmptyState icon={FileText} title={documents.length ? 'No matching documents' : 'No documents yet'}
-        description={documents.length ? 'Try a different search or category.' : 'Add a web page to start building the knowledge base.'} />
+        description={documents.length ? 'Try a different search or category.' : 'Add sources (web pages, PDFs, Drive) in Admin → Sources.'} />
     </div>
   {:else}
+    {#each groups as g (g.key)}
+    <section class="space-y-2" aria-label={g.title}>
+      <h2 class="flex items-center gap-2 text-sm font-semibold px-1 min-w-0">
+        <svelte:component this={g.kind === 'web_site' ? Network : g.key === 'manual' ? FileText : FolderSync} size={15} class="text-muted-foreground shrink-0" />
+        <span class="truncate">{g.title}</span>
+        <span class="text-xs font-normal text-muted-foreground shrink-0">· {liveCount(g)} {g.kind === 'web_site' ? (liveCount(g) === 1 ? 'page' : 'pages') : liveCount(g) === 1 ? 'document' : 'documents'}{reviewCount(g) ? ` live · ${reviewCount(g)} in review` : ''}</span>
+        {#if g.root}<a href={g.root} target="_blank" rel="noopener noreferrer" class="text-xs font-normal text-muted-foreground hover:text-primary truncate hidden sm:inline">{g.root}</a>{/if}
+      </h2>
     <ul class="card divide-y overflow-hidden">
-      {#each filtered as doc (doc.document_id)}
+      {#each g.docs as doc (doc.document_id)}
         {@const open = expandedDoc === doc.document_id}
         <li>
           <div class="flex items-start gap-3 p-4 hover:bg-muted/30 transition-colors">
@@ -259,6 +217,8 @@
                 <span class="flex flex-wrap items-center gap-1.5 mt-1.5">
                   {#if doc.category}<span class="badge-primary">{doc.category}{doc.subcategory ? ` / ${doc.subcategory}` : ''}</span>{/if}
                   <span class="badge-neutral"><Layers size={10} /> {doc.chunk_count ?? 0} chunks</span>
+                  {#if doc.status === 'archived'}<span class="badge-neutral" title="Replaced by a newer version; not searchable">archived</span>{/if}
+                  {#if doc.status === 'draft'}<a href="/admin/sources" class="badge-primary" title="Waiting for review in Sources">draft · review</a>{/if}
                   {#if doc.source_url}<span class="text-xs text-muted-foreground truncate max-w-[16rem]">{hostname(doc.source_url) || doc.source_url}</span>{/if}
                 </span>
               </span>
@@ -296,5 +256,7 @@
         </li>
       {/each}
     </ul>
+    </section>
+    {/each}
   {/if}
 </div>

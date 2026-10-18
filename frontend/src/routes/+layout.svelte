@@ -4,11 +4,12 @@
   import { fade, fly } from 'svelte/transition';
   import { goto, afterNavigate } from '$app/navigation';
   import { page } from '$app/stores';
-  import { Menu, SquarePen } from 'lucide-svelte';
+  import { Menu, SquarePen, PanelLeftOpen } from 'lucide-svelte';
   import { authStore, isLoggedIn, currentUser, authReady } from '$lib/stores/auth';
   import { refreshSessions, sessions } from '$lib/stores/chat';
   import { auth } from '$lib/api/client';
   import { isDark } from '$lib/theme';
+  import { sidebarCollapsed } from '$lib/sidebar';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import Logo from '$lib/components/Logo.svelte';
   import ThemeToggle from '$lib/components/ThemeToggle.svelte';
@@ -68,9 +69,11 @@
 {:else if $isLoggedIn}
   <div class="flex h-dvh overflow-hidden bg-background">
     <!-- Desktop sidebar -->
-    <aside class="hidden lg:block w-72 shrink-0 border-r border-sidebar-border">
-      <Sidebar on:logout={logout} />
-    </aside>
+    {#if !$sidebarCollapsed}
+      <aside class="hidden lg:block w-72 shrink-0 border-r border-sidebar-border">
+        <Sidebar showCollapse on:collapse={sidebarCollapsed.toggle} on:logout={logout} />
+      </aside>
+    {/if}
 
     <!-- Mobile drawer -->
     {#if drawerOpen}
@@ -92,6 +95,18 @@
         <ThemeToggle />
         <a href="/chat" class="icon-btn" aria-label="New chat"><SquarePen size={18} /></a>
       </header>
+
+      {#if $sidebarCollapsed}
+        <!-- Desktop: sidebar hidden, small bar to bring it back -->
+        <header class="hidden lg:flex h-14 shrink-0 items-center gap-1 px-3 border-b bg-card/80 backdrop-blur-md z-30">
+          <button class="icon-btn" on:click={sidebarCollapsed.toggle} aria-label="Show sidebar" title="Show sidebar">
+            <PanelLeftOpen size={19} />
+          </button>
+          <a href="/chat" class="px-1"><Logo compact /></a>
+          <span class="flex-1"></span>
+          <a href="/chat" class="icon-btn" aria-label="New chat" title="New chat"><SquarePen size={18} /></a>
+        </header>
+      {/if}
 
       <main class="flex-1 min-h-0 overflow-hidden">
         <slot />

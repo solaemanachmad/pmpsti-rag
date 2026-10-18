@@ -1,0 +1,6 @@
+# Worker only (lighter than scripts/requirements.txt: no torch / langchain)
+pymupdf==1.28.2
+pymupdf4llm==1.28.2
+psycopg2-binary>=2.9
+requests>=2.31
+pytest>=8

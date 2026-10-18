@@ -112,8 +112,21 @@ def keyword_tsquery(text: str) -> str | None:
 
 
 # ── Search modes (mirror src/db.rs) ─────────────────────────────────
+# Only 'active' chunks are searchable (drafts await admin review, archived = old versions).
+# Databases from before the status column (e.g. eval-snapshot-2026-10-17) have no drafts,
+# so the filter is TRUE there; set in main() after connecting.
+ACTIVE = "status = 'active'"
+
+
+def set_active_filter(cur) -> None:
+    global ACTIVE
+    cur.execute("""SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'documents' AND column_name = 'status'""")
+    ACTIVE = "status = 'active'" if cur.fetchone() else "TRUE"
+
+
 def m_semantic(cur, text, vec, limit):
-    cur.execute(f"""SELECT {COLS} FROM documents WHERE embedding IS NOT NULL
+    cur.execute(f"""SELECT {COLS} FROM documents WHERE embedding IS NOT NULL AND {ACTIVE}
                     ORDER BY embedding <=> %s::vector LIMIT %s""", (vec, limit))
     return cur.fetchall()
 
@@ -123,7 +136,7 @@ def m_keyword(cur, text, vec, limit):  # search_fulltext: also the fallback when
     if not q:
         return []
     cur.execute(f"""SELECT {COLS} FROM documents
-                    WHERE to_tsvector('indonesian', content) @@ to_tsquery('indonesian', %s)
+                    WHERE to_tsvector('indonesian', content) @@ to_tsquery('indonesian', %s) AND {ACTIVE}
                     ORDER BY ts_rank(to_tsvector('indonesian', content),
                                      to_tsquery('indonesian', %s), 1) DESC
                     LIMIT %s""", (q, q, limit))
@@ -131,7 +144,7 @@ def m_keyword(cur, text, vec, limit):  # search_fulltext: also the fallback when
 
 
 def m_hybrid(cur, text, vec, limit):  # search_hybrid — default mode
-    cur.execute(f"""SELECT {COLS} FROM documents
+    cur.execute(f"""SELECT {COLS} FROM documents WHERE {ACTIVE}
                     ORDER BY (0.7 * COALESCE(1.0 - (embedding <=> %s::vector), 0.0)
                             + 0.3 * ts_rank(to_tsvector('indonesian', content),
                                             plainto_tsquery('indonesian', %s), 1)) DESC
@@ -141,7 +154,7 @@ def m_hybrid(cur, text, vec, limit):  # search_hybrid — default mode
 
 def m_rrf(cur, text, vec, limit, k=60):  # search_rrf — only when requested explicitly
     cand = max(limit * 3, 30)
-    cur.execute(f"""SELECT {COLS} FROM documents
+    cur.execute(f"""SELECT {COLS} FROM documents WHERE {ACTIVE}
                     ORDER BY ts_rank(to_tsvector('indonesian', content),
                                      plainto_tsquery('indonesian', %s), 1) DESC
                     LIMIT %s""", (text, cand))
@@ -293,7 +306,8 @@ def main() -> None:
     conn = psycopg2.connect(args.db)
     conn.set_session(readonly=True)
     cur = conn.cursor()
-    cur.execute("SELECT DISTINCT document_id, COALESCE(source_url, '') FROM documents")
+    set_active_filter(cur)
+    cur.execute(f"SELECT DISTINCT document_id, COALESCE(source_url, '') FROM documents WHERE {ACTIVE}")
     present = set().union(*(doc_keys(d, u) for d, u in cur.fetchall()))
     host = args.db.split("@")[-1].split("/")[0]
     meta = run_metadata(cur, args)
