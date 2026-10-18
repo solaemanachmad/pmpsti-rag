@@ -276,6 +276,16 @@ test it in Chat, then **Mark handled**. Each answer is classified when it is log
 `answered`, `not_found`, `no_sources`); guest questions are logged too. Questions logged before this feature
 have no outcome and do not appear.
 
+### Settings (Admin → Settings)
+
+Model, fallback models, temperature, answer length and search limits (candidates, max sources, min score)
+can be changed without a redeploy. Defaults come from the environment (`GEMINI_MODEL` / `LLM_MODEL`,
+`LLM_FALLBACK_MODELS`); saved values are in the `app_settings` table, every change is kept in
+`app_settings_history` (who, when, what), and **Reset to defaults** goes back to the environment.
+**Test** sends one tiny request to a model (one call of quota). The provider and the **API keys stay in
+the environment** (Render): they are never stored in the database; the page only shows whether a key is set.
+After changing the search limits, run the eval.
+
 ## Code and database workflow
 
 There are **two separate flows**: one for **code** (Git, GitHub, Vercel) and one for **data** (Neon). Normal deployments only use the code flow.
