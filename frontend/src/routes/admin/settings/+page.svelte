@@ -129,7 +129,7 @@
           </div>
           <div>
             <label for="set-tokens" class="label">Max answer length (tokens)</label>
-            <input id="set-tokens" type="number" min="256" max="8192" bind:value={form.max_tokens} class="input" />
+            <input id="set-tokens" type="number" required min="256" max="8192" bind:value={form.max_tokens} class="input" />
             <p class="text-xs text-muted-foreground">About ¾ of a word per token. Default {snap.defaults.max_tokens}.</p>
           </div>
         </div>
@@ -144,17 +144,17 @@
         <div class="grid sm:grid-cols-3 gap-4">
           <div>
             <label for="set-cand" class="label">Search candidates</label>
-            <input id="set-cand" type="number" min="3" max="30" bind:value={form.candidates} class="input" />
+            <input id="set-cand" type="number" required min="3" max="30" bind:value={form.candidates} class="input" />
             <p class="text-xs text-muted-foreground">Chunks fetched before filtering. Default {snap.defaults.candidates}.</p>
           </div>
           <div>
             <label for="set-max" class="label">Max sources</label>
-            <input id="set-max" type="number" min="1" max="10" bind:value={form.max_sources} class="input" />
+            <input id="set-max" type="number" required min="1" max="10" bind:value={form.max_sources} class="input" />
             <p class="text-xs text-muted-foreground">Sources given to the model and shown. Guests: at most 5. Default {snap.defaults.max_sources}.</p>
           </div>
           <div>
             <label for="set-min" class="label">Min score</label>
-            <input id="set-min" type="number" min="0" max="1" step="0.01" bind:value={form.min_score} class="input" />
+            <input id="set-min" type="number" required min="0" max="1" step="0.01" bind:value={form.min_score} class="input" />
             <p class="text-xs text-muted-foreground">Sources below this are dropped. Default {round(snap.defaults.min_score)}.</p>
           </div>
         </div>

@@ -4,6 +4,7 @@
 //! API keys are NOT stored here: they stay in the environment (Render), the page only shows
 //! whether a key is set.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -112,6 +113,10 @@ pub fn defaults() -> Settings {
     store().get().map(|s| s.defaults.clone()).unwrap_or_default()
 }
 
+/// Bumped by every save/reset, so a reload that read the database before it cannot put the
+/// old values back.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
 fn set_current(s: Settings) {
     if let Some(st) = store().get() {
         if let Ok(mut c) = st.current.write() { *c = Arc::new(s); }
@@ -155,11 +160,23 @@ pub async fn init(pool: &PgPool, defaults: Settings) {
     });
 }
 
-/// Saved values on top of the defaults (a missing field keeps its default).
+/// Saved values on top of the defaults (a missing field keeps its default). On a database error
+/// the settings in use are kept (not reset to the defaults).
 async fn reload(pool: &PgPool) {
-    let saved: Option<serde_json::Value> = sqlx::query("SELECT value FROM app_settings WHERE key = $1")
-        .bind(KEY).fetch_optional(pool).await.ok().flatten().map(|r| r.get("value"));
-    set_current(merge(&defaults(), saved));
+    let generation = GENERATION.load(Ordering::SeqCst);
+    let saved = match sqlx::query("SELECT value FROM app_settings WHERE key = $1")
+        .bind(KEY).fetch_optional(pool).await
+    {
+        Ok(row) => row.map(|r| r.get::<serde_json::Value, _>("value")),
+        Err(e) => {
+            log::warn!("settings reload failed, keeping the current ones: {e}");
+            return;
+        }
+    };
+    let merged = merge(&defaults(), saved);
+    if GENERATION.load(Ordering::SeqCst) == generation {
+        set_current(merged);
+    }
 }
 
 fn merge(defaults: &Settings, saved: Option<serde_json::Value>) -> Settings {
@@ -186,8 +203,10 @@ pub async fn save(pool: &PgPool, new: Settings, user_id: Option<i64>) -> Result<
     sqlx::query("INSERT INTO app_settings_history (key, old_value, new_value, changed_by) VALUES ($1, $2, $3, $4)")
         .bind(KEY).bind(serde_json::to_value(&*old).ok()).bind(&value).bind(user_id)
         .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    GENERATION.fetch_add(1, Ordering::SeqCst);
     tx.commit().await.map_err(|e| e.to_string())?;
     set_current(new.clone());
+    GENERATION.fetch_add(1, Ordering::SeqCst); // a reload that overlapped the save is discarded
     Ok(new)
 }
 
@@ -200,9 +219,11 @@ pub async fn reset(pool: &PgPool, user_id: Option<i64>) -> Result<Settings, Stri
     sqlx::query("INSERT INTO app_settings_history (key, old_value, new_value, changed_by) VALUES ($1, $2, NULL, $3)")
         .bind(KEY).bind(serde_json::to_value(&*old).ok()).bind(user_id)
         .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    GENERATION.fetch_add(1, Ordering::SeqCst);
     tx.commit().await.map_err(|e| e.to_string())?;
     let d = defaults();
     set_current(d.clone());
+    GENERATION.fetch_add(1, Ordering::SeqCst);
     Ok(d)
 }
 

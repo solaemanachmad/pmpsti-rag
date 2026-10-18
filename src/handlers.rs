@@ -1093,8 +1093,8 @@ pub async fn ask_public(
 
     // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
     let search_mode = body.search_mode.as_deref().unwrap_or("hybrid");
-    let tuning      = crate::settings::get(); // Admin → Settings; guests get at most 5 sources
-    let top_k       = body.top_k.unwrap_or(tuning.candidates);
+    let tuning      = crate::settings::get(); // Admin → Settings; guests: at most 5 candidates and sources
+    let top_k       = body.top_k.unwrap_or(tuning.candidates.min(5));
 
     let start = std::time::Instant::now();
 

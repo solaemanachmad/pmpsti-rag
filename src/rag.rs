@@ -248,7 +248,7 @@ impl RagEngine {
         match self.llm.provider {
             LlmProvider::Gemini           => self.call_gemini_models(&[model.to_string()], "Balas hanya dengan kata: OK", &messages, 16).await,
             LlmProvider::OpenAICompatible => self.call_openai_models(&[model.to_string()], &messages, 16).await,
-            LlmProvider::Ollama           => self.call_ollama(&messages).await,
+            LlmProvider::Ollama           => self.call_ollama_model(model, &messages).await,
         }
     }
 
@@ -566,8 +566,12 @@ impl RagEngine {
     }
 
     async fn call_ollama(&self, messages: &[Message]) -> Result<String> {
+        self.call_ollama_model(&self.model(), messages).await
+    }
+
+    async fn call_ollama_model(&self, model: &str, messages: &[Message]) -> Result<String> {
         let req = OllamaChatRequest {
-            model:    self.model(),
+            model:    model.to_string(),
             messages: messages.to_vec(),
             stream:   false,
             options:  OllamaOptions {
