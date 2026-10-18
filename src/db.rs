@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use anyhow::Result;
-use chrono::Utc;
 use pgvector::Vector;
 use sqlx::{PgPool, Row};
 
@@ -698,11 +697,6 @@ impl Database {
         truncate_at_sentence(&snippet_raw, max_chars)
     }
 
-    /// Util: truncate di batas kalimat terdekat sebelum max_chars
-    fn truncate_snippet(content: &str, max_chars: usize) -> String {
-        truncate_at_sentence(content, max_chars)
-    }
-
 
     // ════════════════════════════════════════════════════════════
     //  QUERY LOGGING
@@ -844,6 +838,7 @@ impl Database {
         })
     }
 
+    #[allow(dead_code)] // retention helper, not scheduled yet
     pub async fn cleanup_old_query_logs(&self, days: i64) -> Result<u64> {
         let res = sqlx::query(
             "DELETE FROM query_logs WHERE created_at < NOW() - ($1::bigint * INTERVAL '1 day')"
@@ -1122,17 +1117,6 @@ impl Database {
         Ok(Some(user_id))
     }
 
-    pub async fn deactivate_user(&self, user_id: i64) -> Result<(), String> {
-        sqlx::query(
-            "UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1"
-        )
-        .bind(user_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
 
     // ════════════════════════════════════════════════════════════
     //  CHAT SESSIONS
@@ -1239,24 +1223,6 @@ impl Database {
         Ok(res.rows_affected() > 0)
     }
 
-    pub async fn delete_sessions_batch(
-        &self,
-        session_ids: &[String],
-        user_id:     i64,
-    ) -> Result<usize, String> {
-        // ANY($1) lebih efisien daripada loop
-        let res = sqlx::query(
-            "DELETE FROM chat_sessions WHERE id = ANY($1) AND user_id = $2"
-        )
-        .bind(session_ids)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        Ok(res.rows_affected() as usize)
-    }
-
     pub async fn rename_session(
         &self,
         session_id: &str,
@@ -1278,6 +1244,7 @@ impl Database {
         Ok(res.rows_affected() > 0)
     }
 
+    #[allow(dead_code)] // retention helper, not scheduled yet
     pub async fn cleanup_old_sessions(&self, days: i64) -> Result<u64> {
         let res = sqlx::query(
             "DELETE FROM chat_sessions
@@ -1358,39 +1325,32 @@ impl Database {
         }).collect())
     }
 
-    /// Lookup berdasarkan prefix, kembalikan data untuk verifikasi hash.
+    /// Active, unexpired key with this prefix whose owner account is active.
     /// Returns: (key_id, user_id, key_hash, permissions_json, rate_limit)
     pub async fn lookup_api_key(
         &self,
         key_prefix: &str,
     ) -> Result<Option<(i64, i64, String, String, i32)>, String> {
+        // Expiry is checked in SQL: expires_at is TIMESTAMPTZ (reading it as text failed
+        // silently before, so expired keys were never rejected).
         let row = sqlx::query(
-            "SELECT id, user_id, key_hash, permissions::text, rate_limit, expires_at
-             FROM api_keys
-             WHERE key_prefix = $1 AND is_active = TRUE",
+            "SELECT k.id, k.user_id, k.key_hash, k.permissions::text AS permissions,
+                    COALESCE(k.rate_limit, 30) AS rate_limit
+             FROM api_keys k JOIN users u ON u.id = k.user_id
+             WHERE k.key_prefix = $1 AND k.is_active = TRUE
+               AND (k.expires_at IS NULL OR k.expires_at > NOW())
+               AND COALESCE(u.is_active, TRUE)",
         )
         .bind(key_prefix)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
 
-        let Some(r) = row else { return Ok(None) };
-
-        // Cek expiry
-        let expires: Option<String> = r.try_get("expires_at").ok().flatten();
-        if let Some(exp_str) = expires {
-            if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(&exp_str) {
-                if exp < Utc::now() {
-                    return Ok(None); // sudah expired
-                }
-            }
-        }
-
-        Ok(Some((
+        Ok(row.map(|r| (
             r.get("id"),
             r.get("user_id"),
             r.get("key_hash"),
-            r.get("permissions"),
+            r.get::<Option<String>, _>("permissions").unwrap_or_default(),
             r.get("rate_limit"),
         )))
     }
@@ -1422,16 +1382,6 @@ impl Database {
     // ════════════════════════════════════════════════════════════
     //  UTILITIES
     // ════════════════════════════════════════════════════════════
-
-    pub async fn document_exists(&self, file_hash: &str) -> Result<bool, sqlx::Error> {
-        let row = sqlx::query(
-            "SELECT 1 FROM documents WHERE file_hash = $1 LIMIT 1"
-        )
-        .bind(file_hash)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.is_some())
-    }
 
     pub async fn list_categories(&self) -> Result<Vec<String>, sqlx::Error> {
         let rows = sqlx::query(

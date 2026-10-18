@@ -11,6 +11,7 @@
   import { Plus, Trash2, Copy, Check, KeyRound, Loader2, X } from 'lucide-svelte';
 
   let apiKeys: ApiKeyInfo[] = [];
+  const apiBase = typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api';
   let loading = false;
   let creating = false;
   let error = '';
@@ -127,6 +128,16 @@
           </div>
         </div>
       {/if}
+
+      <details class="card p-4 text-sm">
+        <summary class="font-semibold cursor-pointer select-none">How to use a key</summary>
+        <p class="text-xs text-muted-foreground mt-2">Send the key in the <code>X-API-Key</code> header (or <code>Authorization: Bearer …</code>) to <code>/api/ask</code>. Each key is limited to its requests per minute.</p>
+        <pre class="mt-2 rounded-lg border bg-muted/50 p-3 text-xs overflow-x-auto"><code>curl -X POST {apiBase}/ask \
+  -H "X-API-Key: rag_…" \
+  -H "Content-Type: application/json" \
+  -d '{`{"query": "Berapa SKS tesis?"}`}'</code></pre>
+        <p class="text-xs text-muted-foreground mt-2">The answer comes back as JSON with <code>answer</code>, <code>sources</code> and <code>session_id</code> (send it back to continue the conversation).</p>
+      </details>
 
       {#if loading}
         <LoadingState />
