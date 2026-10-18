@@ -60,3 +60,10 @@ jobs:
           if [ "$FIGURES" != "true" ]; then args="$args --no-figures"; fi
           python -m worker $args
 
+      - name: Wake the backend for web-page jobs
+        # Web sources (sites / pages) are read by the backend itself; the scheduled re-check above
+        # queues them, and the backend picks them up as soon as it is awake (Render free sleeps).
+        if: always()
+        run: curl -fsS --max-time 120 "${BACKEND_URL:-https://pmpsti-rag.onrender.com}/health" || true
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL }}

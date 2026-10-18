@@ -57,6 +57,8 @@ pub async fn setup_tables(pool: &PgPool) -> anyhow::Result<()> {
         )",
         "CREATE INDEX IF NOT EXISTS ingest_jobs_state_idx ON ingest_jobs(state, created_at)",
         "CREATE INDEX IF NOT EXISTS source_files_source_idx ON source_files(source_id)",
+        // web_site: 'manual' = only registered pages, 'auto' = also look for new pages under the root
+        "ALTER TABLE sources ADD COLUMN IF NOT EXISTS discover TEXT NOT NULL DEFAULT 'manual'",
         // HNSW index over searchable chunks only. pgvector filters a plain HNSW scan AFTER the
         // index lookup, so drafts/archived versions (near-identical to the active one) could
         // fill the candidate list and leave semantic search with too few active results.
@@ -75,8 +77,8 @@ pub async fn setup_tables(pool: &PgPool) -> anyhow::Result<()> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedLink {
-    pub kind:        &'static str, // drive_folder | drive_file | web_pdf
-    pub external_id: String,       // Drive id, or the URL itself for web_pdf
+    pub kind:        &'static str, // drive_folder | drive_file | web_pdf | web_page | web_site
+    pub external_id: String,       // Drive id, or the URL itself
     pub url:         String,       // normalised URL stored in `sources.url`
 }
 
@@ -118,9 +120,15 @@ pub fn parse_source_link(raw: &str) -> Result<ParsedLink, String> {
         return Err("Link Google Drive tidak dikenali (butuh link folder atau file)".into());
     }
 
-    let url = url.split('#').next().unwrap_or(url).to_string();
-    Ok(ParsedLink { kind: "web_pdf", external_id: url.clone(), url })
+    let url = crate::site::normalize_url(url).ok_or("Link tidak valid")?;
+    let path = url.split('?').next().unwrap_or(&url).to_lowercase();
+    let kind = if path.ends_with(".pdf") { "web_pdf" } else { "web_page" };
+    Ok(ParsedLink { kind, external_id: url.clone(), url })
 }
+
+/// Kinds read by the backend (src/web_jobs.rs). All other kinds (drive_folder, drive_file,
+/// web_pdf) are PDFs for the Python worker (scripts/worker), which claims only those.
+pub const WEB_KINDS: [&str; 2] = ["web_site", "web_page"];
 
 /// Link shown to students for a cited source. Direct PDF links open at the first cited page;
 /// the Google Drive viewer ignores `#page=N`, so Drive links are left unchanged.
@@ -148,14 +156,32 @@ pub struct NewSource {
     #[serde(default)] pub valid_from:    Option<String>,
     #[serde(default)] pub supersedes_id: Option<i64>,
     #[serde(default = "default_true")] pub auto_check: bool,
+    /// "web_site" | "web_page" | "web_pdf" to override the kind guessed from the link
+    #[serde(default)] pub kind:          Option<String>,
+    /// web_site: pages to register now (each must lie under `url`, the site root)
+    #[serde(default)] pub pages:         Vec<String>,
+    /// web_site: "manual" (default) or "auto"
+    #[serde(default)] pub discover:      Option<String>,
 }
 fn default_true() -> bool { true }
+
+#[derive(Debug, Serialize)]
+pub struct FileRow {
+    pub id:           i64,
+    pub name:         String,
+    pub external_id:  String,
+    pub citation_url: String,
+    pub status:       String,
+    pub document_id:  String,
+    pub updated_at:   Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct SourceRow {
     pub id:            i64,
     pub kind:          String,
     pub url:           String,
+    pub discover:      String,
     pub title:         String,
     pub category:      String,
     pub subcategory:   String,
@@ -204,32 +230,168 @@ pub struct DraftDocument {
 //  QUERIES
 // ══════════════════════════════════════════════════════════════════
 
+/// A web page link that is already a page of another source (site or standalone page).
+pub async fn page_owner(pool: &PgPool, url: &str, except_source: Option<i64>) -> Result<Option<(i64, String)>, String> {
+    let row = sqlx::query(
+        "SELECT s.id, COALESCE(NULLIF(s.title, ''), s.url) AS title FROM source_files f JOIN sources s ON s.id = f.source_id
+         WHERE f.external_id = $1 AND s.kind IN ('web_site', 'web_page') AND ($2::bigint IS NULL OR s.id <> $2)
+         UNION ALL
+         SELECT s.id, COALESCE(NULLIF(s.title, ''), s.url) FROM sources s
+         WHERE s.kind = 'web_page' AND s.url = $1 AND ($2::bigint IS NULL OR s.id <> $2)
+         LIMIT 1",
+    ).bind(url).bind(except_source).fetch_optional(pool).await.map_err(|e| e.to_string())?;
+    Ok(row.map(|r| (r.get("id"), r.get("title"))))
+}
+
+fn is_pdf_link(url: &str) -> bool {
+    url.split(['?', '#']).next().unwrap_or(url).to_lowercase().ends_with(".pdf")
+}
+
+/// Create a source. For a site, `link.url` is the root and `s.pages` the pages to register.
 pub async fn create_source(pool: &PgPool, s: &NewSource, link: &ParsedLink, user_id: Option<i64>) -> Result<i64, String> {
+    let discover = match s.discover.as_deref() {
+        Some("auto") if link.kind == "web_site" => "auto",
+        _ => "manual",
+    };
+    let mut pages: Vec<String> = Vec::new();
+    match link.kind {
+        "web_site" => {
+            for p in &s.pages {
+                let n = crate::site::normalize_url(p).ok_or_else(|| format!("Link halaman tidak valid: {p}"))?;
+                if !crate::site::is_under(&n, &link.url) {
+                    return Err(format!("Halaman {n} tidak berada di bawah {}", link.url));
+                }
+                if is_pdf_link(&n) {
+                    return Err(format!("{n} adalah PDF; tambahkan sebagai sumber PDF tersendiri"));
+                }
+                if !pages.contains(&n) { pages.push(n); }
+            }
+            if pages.is_empty() && discover == "manual" {
+                return Err("Tambahkan minimal satu halaman, atau pilih mode otomatis".into());
+            }
+        }
+        "web_page" => pages.push(link.url.clone()),
+        _ => {}
+    }
+    for page in &pages {
+        if let Some((_, title)) = page_owner(pool, page, None).await? {
+            return Err(format!("{page} sudah menjadi bagian dari sumber \"{title}\""));
+        }
+    }
+
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let row = sqlx::query(
         "INSERT INTO sources (kind, url, external_id, title, category, subcategory, version_label,
-                              valid_from, supersedes_id, auto_check, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10,$11)
+                              valid_from, supersedes_id, auto_check, created_by, discover)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10,$11,$12)
          RETURNING id",
     )
     .bind(link.kind).bind(&link.url).bind(&link.external_id)
     .bind(s.title.trim()).bind(s.category.trim()).bind(s.subcategory.trim()).bind(s.version_label.trim())
     .bind(s.valid_from.as_deref().filter(|v| !v.trim().is_empty()))
-    .bind(s.supersedes_id).bind(s.auto_check).bind(user_id)
+    .bind(s.supersedes_id).bind(s.auto_check).bind(user_id).bind(discover)
     .fetch_one(&mut *tx).await
     .map_err(|e| if e.to_string().contains("sources_url_key") {
         "Link ini sudah terdaftar sebagai sumber".to_string()
     } else { e.to_string() })?;
     let id: i64 = row.get("id");
+    for page in &pages {
+        sqlx::query("INSERT INTO source_files (source_id, external_id, name, citation_url) VALUES ($1,$2,'',$2)
+                     ON CONFLICT (source_id, external_id) DO NOTHING")
+            .bind(id).bind(page).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    }
     sqlx::query("INSERT INTO ingest_jobs (source_id, log) VALUES ($1, 'Dibuat dari form admin')")
         .bind(id).execute(&mut *tx).await.map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(id)
 }
 
+/// Kind and root URL of a source.
+pub async fn source_kind(pool: &PgPool, source_id: i64) -> Result<Option<(String, String)>, String> {
+    let row = sqlx::query("SELECT kind, url FROM sources WHERE id = $1")
+        .bind(source_id).fetch_optional(pool).await.map_err(|e| e.to_string())?;
+    Ok(row.map(|r| (r.get("kind"), r.get("url"))))
+}
+
+/// Register more pages on a site and queue a job for them. Returns how many were new.
+pub async fn add_pages(pool: &PgPool, source_id: i64, urls: &[String]) -> Result<usize, String> {
+    let Some((kind, root)) = source_kind(pool, source_id).await? else {
+        return Err("Sumber tidak ditemukan".into());
+    };
+    if kind != "web_site" {
+        return Err("Halaman hanya bisa ditambahkan ke sumber jenis situs".into());
+    }
+    let mut normalized = Vec::new();
+    for raw in urls {
+        let n = crate::site::normalize_url(raw).ok_or_else(|| format!("Link tidak valid: {raw}"))?;
+        if !crate::site::is_under(&n, &root) {
+            return Err(format!("Halaman {n} tidak berada di bawah {root}"));
+        }
+        if is_pdf_link(&n) {
+            return Err(format!("{n} adalah PDF; tambahkan sebagai sumber PDF tersendiri"));
+        }
+        if let Some((_, title)) = page_owner(pool, &n, Some(source_id)).await? {
+            return Err(format!("{n} sudah menjadi bagian dari sumber \"{title}\""));
+        }
+        normalized.push(n);
+    }
+    let mut added = 0;
+    for n in &normalized {
+        let res = sqlx::query("INSERT INTO source_files (source_id, external_id, name, citation_url) VALUES ($1,$2,'',$2)
+                               ON CONFLICT (source_id, external_id) DO NOTHING")
+            .bind(source_id).bind(n).execute(pool).await.map_err(|e| e.to_string())?;
+        added += res.rows_affected() as usize;
+    }
+    if added > 0 {
+        queue_job(pool, source_id, "Halaman ditambahkan oleh admin").await?;
+    }
+    Ok(added)
+}
+
+pub async fn list_files(pool: &PgPool, source_id: i64) -> Result<Vec<FileRow>, String> {
+    let rows = sqlx::query(
+        "SELECT id, COALESCE(name,'') AS name, external_id, citation_url, status, COALESCE(document_id,'') AS document_id,
+                to_json(updated_at)#>>'{}' AS updated_at
+         FROM source_files WHERE source_id = $1 ORDER BY external_id",
+    ).bind(source_id).fetch_all(pool).await.map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(|r| FileRow {
+        id: r.get("id"), name: r.get("name"), external_id: r.get("external_id"),
+        citation_url: r.get("citation_url"), status: r.get("status"),
+        document_id: r.get("document_id"), updated_at: r.get("updated_at"),
+    }).collect())
+}
+
+/// (id, root, title) of every site source, for matching a page to its site.
+pub async fn site_roots(pool: &PgPool) -> Result<Vec<(i64, String, String)>, String> {
+    let rows = sqlx::query("SELECT id, url, COALESCE(title,'') AS title FROM sources WHERE kind = 'web_site'")
+        .fetch_all(pool).await.map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(|r| (r.get("id"), r.get("url"), r.get("title"))).collect())
+}
+
+/// Approve every draft of a source (e.g. all changed pages of a site) in one go.
+pub async fn approve_source(pool: &PgPool, source_id: i64) -> Result<(u64, usize, Vec<String>), String> {
+    // One transaction: either every draft of the source goes live, or none does
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    lock_approvals(&mut tx).await?;
+    let docs: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT d.document_id FROM documents d JOIN source_files f ON f.id = d.source_file_id
+         WHERE f.source_id = $1 AND d.status = 'draft' ORDER BY 1",
+    ).bind(source_id).fetch_all(&mut *tx).await.map_err(|e| e.to_string())?;
+    let (mut chunks, mut approved, mut archived) = (0u64, 0usize, Vec::new());
+    for d in &docs {
+        if let Some((n, a)) = approve_in_tx(&mut tx, d).await? {
+            chunks += n;
+            approved += 1;
+            archived.extend(a);
+        }
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok((chunks, approved, archived))
+}
+
 pub async fn list_sources(pool: &PgPool) -> Result<Vec<SourceRow>, String> {
     let rows = sqlx::query(
-        "SELECT s.id, s.kind, s.url, s.title, s.category, s.subcategory, s.version_label,
+        "SELECT s.id, s.kind, s.url, s.discover, s.title, s.category, s.subcategory, s.version_label,
                 s.valid_from::text AS valid_from, s.supersedes_id, s.auto_check,
                 to_json(s.last_checked)#>>'{}' AS last_checked, to_json(s.created_at)#>>'{}' AS created_at,
                 (SELECT COUNT(*) FROM source_files f WHERE f.source_id = s.id) AS file_count,
@@ -250,6 +412,7 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<SourceRow>, String> {
         id: r.get("id"),
         kind: r.get("kind"),
         url: r.get("url"),
+        discover: r.get("discover"),
         title: r.get::<Option<String>, _>("title").unwrap_or_default(),
         category: r.get::<Option<String>, _>("category").unwrap_or_default(),
         subcategory: r.get::<Option<String>, _>("subcategory").unwrap_or_default(),
@@ -275,7 +438,8 @@ pub async fn queue_job(pool: &PgPool, source_id: i64, note: &str) -> Result<bool
         return Err("Sumber tidak ditemukan".into());
     }
     let pending: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM ingest_jobs WHERE source_id = $1 AND state IN ('queued','running')",
+        // A queued job behind a running one is allowed: it picks up what changed meanwhile
+        "SELECT COUNT(*) FROM ingest_jobs WHERE source_id = $1 AND state = 'queued'",
     )
     .bind(source_id).fetch_one(pool).await.map_err(|e| e.to_string())?;
     if pending > 0 {
@@ -349,7 +513,10 @@ pub async fn list_drafts(pool: &PgPool) -> Result<Vec<DraftDocument>, String> {
         if let Some(fid) = file_id {
             if let Ok(Some(m)) = sqlx::query(
                 "SELECT s.id, s.title, s.version_label, f.citation_url,
-                        (SELECT log FROM ingest_jobs WHERE source_file_id = f.id ORDER BY id DESC LIMIT 1) AS job_log
+                        COALESCE(
+                          (SELECT log FROM ingest_jobs WHERE source_file_id = f.id ORDER BY id DESC LIMIT 1),
+                          (SELECT log FROM ingest_jobs WHERE source_id = s.id AND state = 'done' ORDER BY id DESC LIMIT 1)
+                        ) AS job_log
                  FROM source_files f JOIN sources s ON s.id = f.source_id WHERE f.id = $1",
             ).bind(fid).fetch_optional(pool).await {
                 source_id = Some(m.get::<i64, _>("id"));
@@ -382,7 +549,7 @@ pub async fn list_drafts(pool: &PgPool) -> Result<Vec<DraftDocument>, String> {
 ///   removing old guidebooks while their replacements are still waiting for review.
 const REPLACED_SQL: &str =
     "WITH draft AS (
-        SELECT DISTINCT d.source_file_id, f.source_id
+        SELECT DISTINCT d.source_file_id, f.source_id, COALESCE(d.source_url, '') AS source_url
         FROM documents d LEFT JOIN source_files f ON f.id = d.source_file_id
         WHERE d.document_id = $1 AND d.status = 'draft'
      ),
@@ -400,6 +567,12 @@ const REPLACED_SQL: &str =
             SELECT f.id FROM source_files f JOIN sources s ON s.supersedes_id = f.source_id
             WHERE s.id IN (SELECT source_id FROM last_draft)
         )
+        -- same link: a page/PDF ingested before sources existed (Add from URL, scripts), or the
+        -- same page held by another source, is replaced by the version being approved
+        OR (d.source_url <> '' AND (
+            d.source_url IN (SELECT source_url FROM draft WHERE source_url <> '')
+            OR d.source_url IN (SELECT source_url || 'index.html' FROM draft WHERE source_url LIKE '%/')
+            OR d.source_url || '/' IN (SELECT source_url FROM draft WHERE source_url LIKE '%/')))
      )";
 
 pub async fn documents_replaced_by(pool: &PgPool, draft_doc_id: &str) -> Result<Vec<String>, String> {
@@ -410,30 +583,45 @@ pub async fn documents_replaced_by(pool: &PgPool, draft_doc_id: &str) -> Result<
 /// Approve a draft: its chunks become searchable, replaced documents are archived.
 pub async fn approve_draft(pool: &PgPool, document_id: &str) -> Result<(u64, Vec<String>), String> {
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-    // Serialise approvals of the same source so two admins cannot archive in parallel
+    lock_approvals(&mut tx).await?;
+    let Some(result) = approve_in_tx(&mut tx, document_id).await? else {
+        return Err("Draft tidak ditemukan".into());
+    };
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+/// Serialise approvals so two admins (or approve-all) cannot archive in parallel.
+async fn lock_approvals(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), String> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext('approve-draft'))")
-        .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+        .execute(&mut **tx).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Approve one draft inside a transaction. None = no such draft (e.g. rejected meanwhile).
+async fn approve_in_tx(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, document_id: &str)
+    -> Result<Option<(u64, Vec<String>)>, String>
+{
     let replaced: Vec<String> = sqlx::query(REPLACED_SQL).bind(document_id)
-        .fetch_all(&mut *tx).await.map_err(|e| e.to_string())?
+        .fetch_all(&mut **tx).await.map_err(|e| e.to_string())?
         .iter().map(|r| r.get("document_id")).collect();
     if !replaced.is_empty() {
         sqlx::query("UPDATE documents SET status = 'archived', updated_at = NOW()
                      WHERE status = 'active' AND document_id = ANY($1::text[])")
-            .bind(&replaced).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+            .bind(&replaced).execute(&mut **tx).await.map_err(|e| e.to_string())?;
         sqlx::query("UPDATE source_files SET status = 'archived', updated_at = NOW()
                      WHERE document_id = ANY($1::text[])")
-            .bind(&replaced).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+            .bind(&replaced).execute(&mut **tx).await.map_err(|e| e.to_string())?;
     }
     let res = sqlx::query("UPDATE documents SET status = 'active', updated_at = NOW()
                            WHERE status = 'draft' AND document_id = $1")
-        .bind(document_id).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+        .bind(document_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
     if res.rows_affected() == 0 {
-        return Err("Draft tidak ditemukan".into());
+        return Ok(None);
     }
     sqlx::query("UPDATE source_files SET status = 'active', updated_at = NOW() WHERE document_id = $1")
-        .bind(document_id).execute(&mut *tx).await.map_err(|e| e.to_string())?;
-    tx.commit().await.map_err(|e| e.to_string())?;
-    Ok((res.rows_affected(), replaced))
+        .bind(document_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+    Ok(Some((res.rows_affected(), replaced)))
 }
 
 /// Reject a draft: delete its chunks; the file is re-processed only when it changes again
@@ -500,6 +688,14 @@ mod tests {
         assert_eq!(p.url, "https://jteti.ugm.ac.id/wp-content/uploads/panduan.pdf");
         assert!(parse_source_link("ftp://x/y.pdf").is_err());
         assert!(parse_source_link("https://drive.google.com/drive/my-drive").is_err());
+    }
+
+    #[test]
+    fn web_page_links() {
+        let p = parse_source_link("https://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html#x").unwrap();
+        assert_eq!(p.kind, "web_page");
+        assert_eq!(p.url, "https://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html");
+        assert_eq!(parse_source_link("https://jteti.ugm.ac.id/tenaga-pendidik/").unwrap().kind, "web_page");
     }
 
     #[test]

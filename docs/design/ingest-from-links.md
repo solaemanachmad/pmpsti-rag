@@ -175,7 +175,24 @@ Each PR: run `eval_retrieval.py` (+ `--backend` e2e when retrieval/answers can c
 - Optional immediate run: backend env `GITHUB_REPO` + `GITHUB_WORKER_TOKEN` dispatches the workflow.
 - Defaults chosen for the open decisions below: admins only; daily re-check; private Drive files not supported.
 
-## 10. Open decisions
+## 10. Websites as sources (added 2026-10-18)
+
+- Kinds `web_site` (root URL + pages as `source_files`) and `web_page` (standalone page), processed by the
+  backend runner `src/web_jobs.rs` with the existing reader (`handlers::read_and_chunk_page`) — one
+  document per page, cited by its own URL. The Python worker claims only PDF kinds; both share `ingest_jobs`.
+- `discover = 'manual'` (only registered pages) or `'auto'` (sitemap.xml, else breadth-first link crawl
+  under the root, max 150 pages). New pages always arrive as drafts.
+- Parent detection (`POST /api/admin/sources/resolve`, `src/site.rs`): longest existing site root that
+  prefixes the page; otherwise a suggested root from the page's navbar/home link (Quarto `../index.html`),
+  else the first path segment, plus the site name from `og:site_name` / `<title>`. The admin confirms.
+- Change detection per page = SHA-256 of the chunk texts; unchanged pages are skipped; 404 → `missing`
+  (active version kept); identical content under two URLs → `duplicate`.
+- Adoption: approving a managed page/PDF archives an active pre-sources document with the same link
+  (Add from URL, `ingest_urls.py`), so the existing corpus moves over by approving drafts.
+- Admin UI: Add from URL removed from Documents; Documents grouped by source, archived hidden by default;
+  Sources shows pages, "Add pages", and "Approve all" per source.
+
+## 11. Open decisions
 
 1. **Google Cloud project for the Drive API key** — whose account (ideally institutional)?
 2. **Who may add sources** — admins only, or also an "editor" role?

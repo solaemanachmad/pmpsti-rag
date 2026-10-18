@@ -186,6 +186,17 @@ export const admin = {
   deleteSource: (id: number) =>
     request<{ deleted: boolean }>(`/admin/sources/${id}`, { method: 'DELETE' }),
   sourceJobs: (id: number) => request<IngestJob[]>(`/admin/sources/${id}/jobs`),
+  sourceFiles: (id: number) => request<SourceFile[]>(`/admin/sources/${id}/files`),
+  resolveLink: (url: string) =>
+    request<ResolvedLink>('/admin/sources/resolve', { method: 'POST', body: JSON.stringify({ url }) }),
+  addPages: (id: number, urls: string[]) =>
+    request<{ added: number; message: string }>(`/admin/sources/${id}/pages`, {
+      method: 'POST',
+      body: JSON.stringify({ urls })
+    }),
+  approveAll: (id: number) =>
+    request<{ approved_documents: number; activated_chunks: number; archived_documents: string[] }>(
+      `/admin/sources/${id}/approve-all`, { method: 'POST' }),
   drafts: () => request<DraftDocument[]>('/admin/drafts'),
   draftChunks: (document_id: string) =>
     request<DraftChunk[]>(`/admin/drafts/${encodeURIComponent(document_id)}/chunks`),
@@ -197,11 +208,35 @@ export const admin = {
       `/admin/drafts/${encodeURIComponent(document_id)}/reject`, { method: 'POST' })
 };
 
-export type SourceKind = 'drive_folder' | 'drive_file' | 'web_pdf';
+export type SourceKind = 'drive_folder' | 'drive_file' | 'web_pdf' | 'web_site' | 'web_page';
+export interface ResolvedLink {
+  kind: SourceKind;
+  url: string;
+  page_title?: string;
+  /** the link could not be opened; the choice is guessed from the address */
+  warning?: string;
+  /** the page lies under a site that is already a source */
+  parent?: { id: number; root: string; title: string };
+  /** the page is already part of a source */
+  existing?: { id: number; title: string };
+  /** guessed site the page belongs to (offered to the admin) */
+  suggestion?: { root: string; site_name: string } | null;
+}
+export interface SourceFile {
+  id: number;
+  name: string;
+  external_id: string;
+  citation_url: string;
+  status: 'pending' | 'draft' | 'active' | 'rejected' | 'archived' | 'missing' | 'duplicate' | 'error' | string;
+  document_id: string;
+  updated_at: string | null;
+}
 export interface SourceRow {
   id: number;
   kind: SourceKind;
   url: string;
+  /** web_site: 'manual' = only registered pages, 'auto' = also find new pages under the root */
+  discover: 'manual' | 'auto';
   title: string;
   category: string;
   subcategory: string;
@@ -226,6 +261,9 @@ export interface NewSourcePayload {
   valid_from?: string;
   supersedes_id?: number | null;
   auto_check?: boolean;
+  kind?: 'web_site' | 'web_page' | 'web_pdf';
+  pages?: string[];
+  discover?: 'manual' | 'auto';
 }
 export interface IngestJob {
   id: number;
@@ -424,6 +462,10 @@ export interface AdminDocument {
   /** active = searchable, draft = waiting for review, archived = replaced by a newer version */
   status?: 'active' | 'draft' | 'archived';
   chunk_count: number;
+  source_id?: number | null;
+  source_title?: string;
+  source_kind?: SourceKind | '';
+  source_root?: string;
 }
 export interface IngestResponse {
   document_id: string;

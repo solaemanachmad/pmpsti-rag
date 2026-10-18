@@ -198,19 +198,26 @@ Rows are matched by `id` **and** content (title + content). Rows that differ, or
 
 ---
 
-## 7. Documents from links (Google Drive / website PDFs)
+## 7. Sources: web pages, website PDFs and Google Drive
 
-PDFs are not uploaded to the repo or the server. An admin adds a **link** in
-**Admin → Sources**; a worker fetches the PDF, reads it page by page and saves the chunks as
-**drafts**. Drafts are not used in answers until an admin approves them in the same page.
-Answers then cite the document link and the page (direct PDF links open at that page).
+All content is added in **Admin → Sources** as a **link**. New and changed content is saved as
+**drafts**; drafts are not used in answers until an admin approves them in the same page.
+**Admin → Documents** is the library of what is indexed, grouped per source.
 Design: [`docs/design/ingest-from-links.md`](docs/design/ingest-from-links.md).
 
-| Link type | Example | Notes |
+| Source type | Example | Read by |
 |---|---|---|
-| Google Drive folder | `https://drive.google.com/drive/folders/<id>` | Every PDF / Google Doc inside (also subfolders) |
-| Google Drive file | `https://drive.google.com/file/d/<id>/view` | |
-| Website PDF | `https://jteti.ugm.ac.id/…/panduan.pdf` | The link must open the PDF itself |
+| Website (several pages) | `https://mtiugm.github.io/panduan_pmpsti/` + chosen pages | backend (`src/web_jobs.rs`, same reader as before) |
+| Web page (standalone) | `https://jteti.ugm.ac.id/tenaga-pendidik/` | backend |
+| Website PDF | `https://jteti.ugm.ac.id/…/panduan.pdf` | Python worker |
+| Google Drive file / folder | `https://drive.google.com/drive/folders/<id>` | Python worker |
+
+**Websites.** Paste one or more page links. If they lie under a site that is already a source, they are
+added to it; otherwise the form suggests the site (from the page's home link and title) and you choose
+*part of this website* or *standalone page*. A site source keeps **one document per page** (each page is
+its own citation) and has two modes: **only the pages you add** (add more later under *Pages*), or
+**also find all pages under the root** (sitemap.xml, else links between pages). Pages ingested earlier
+with Add from URL or `ingest_urls.py` are **replaced (archived)** when their managed version is approved.
 
 Drive files must be shared as **Anyone with the link can view**. If the same PDF is on Drive and on
 the website, add both: the file is stored once and answers cite the website link.
@@ -218,14 +225,15 @@ the website, add both: the file is stored once and answers cite the website link
 ### Lifecycle
 
 ```
-Add source → job queued → worker: download → read pages → tables/figures → chunks → embeddings → DRAFT
-          → Admin → Sources → review → Approve (active; older version archived) / Reject (deleted)
-Daily re-check: changed file → new draft → review again. Unchanged files cost nothing.
+Add source → job queued → backend (web pages) or worker (PDFs): read → chunks → embeddings → DRAFT
+          → Admin → Sources → review → Approve / Approve all (active; older version archived) / Reject
+Daily re-check: changed page/file → new draft → review again. Unchanged content costs nothing.
 ```
 
 ### Run the worker
 
-The worker runs in **GitHub Actions** (`.github/workflows/ingest-worker.yml`): daily, and on demand
+Web pages are processed by the backend right away. PDFs are processed by the worker, which runs in
+**GitHub Actions** (`.github/workflows/ingest-worker.yml`): daily, and on demand
 from the Actions tab ("Ingest worker" → Run workflow). Repository secrets: `DATABASE_URL`,
 `GEMINI_API_KEY`, `GOOGLE_API_KEY` (a Google Cloud API key with the **Google Drive API** enabled).
 

@@ -1538,6 +1538,11 @@ pub struct AdminDocument {
     pub source_url:    String,
     pub status:        String,
     pub chunk_count:   i64,
+    /// Source this document belongs to (None for documents added before sources existed)
+    pub source_id:     Option<i64>,
+    pub source_title:  String,
+    pub source_kind:   String,
+    pub source_root:   String,
 }
 
 impl Database {
@@ -1706,17 +1711,24 @@ impl Database {
 
     pub async fn admin_list_documents(&self) -> Result<Vec<AdminDocument>, String> {
         let rows = sqlx::query(
-            "SELECT document_id,
-                    COALESCE(MIN(title),'') as title,
-                    COALESCE(MIN(document_type),'') as document_type,
-                    COALESCE(MIN(category),'') as category,
-                    COALESCE(MIN(subcategory),'') as subcategory,
-                    COALESCE(MIN(source_url),'') as source_url,
-                    COALESCE(MIN(status),'active') as status,
-                    COUNT(*) as chunk_count
-             FROM documents
-             GROUP BY document_id
-             ORDER BY MIN(category), document_id"
+            "SELECT x.*, s.id AS source_id, COALESCE(s.title, '') AS source_title,
+                    COALESCE(s.kind, '') AS source_kind, COALESCE(s.url, '') AS source_root
+             FROM (
+                SELECT document_id,
+                       COALESCE(MIN(title),'') as title,
+                       COALESCE(MIN(document_type),'') as document_type,
+                       COALESCE(MIN(category),'') as category,
+                       COALESCE(MIN(subcategory),'') as subcategory,
+                       COALESCE(MIN(source_url),'') as source_url,
+                       COALESCE(MIN(status),'active') as status,
+                       MIN(source_file_id) as source_file_id,
+                       COUNT(*) as chunk_count
+                FROM documents
+                GROUP BY document_id
+             ) x
+             LEFT JOIN source_files f ON f.id = x.source_file_id
+             LEFT JOIN sources s ON s.id = f.source_id
+             ORDER BY x.category, x.source_url, x.document_id"
         )
         .fetch_all(&self.pool)
         .await
@@ -1731,6 +1743,10 @@ impl Database {
             source_url:    r.get("source_url"),
             status:        r.get("status"),
             chunk_count:   r.get("chunk_count"),
+            source_id:     r.get("source_id"),
+            source_title:  r.get("source_title"),
+            source_kind:   r.get("source_kind"),
+            source_root:   r.get("source_root"),
         }).collect())
     }
 

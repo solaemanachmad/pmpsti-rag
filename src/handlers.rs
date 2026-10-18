@@ -2080,6 +2080,46 @@ async fn chunk_text(
     Ok((resolved_strategy, chunks_text))
 }
 
+/// One web page read and chunked for a source job (src/web_jobs.rs): the same reader,
+/// sections, acronyms and table chunks as Add from URL, with the `auto` strategy (which
+/// resolves to sentence/structural — no Gemini calls while chunking).
+pub(crate) struct WebPageChunks {
+    pub title:    String,
+    pub chunks:   Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub(crate) async fn read_and_chunk_page(url: &str) -> Result<WebPageChunks, String> {
+    let html = fetch_html_with_js(url).await?;
+    let page = extract_page(&html, url, None);
+    if page.text.len() < 50 && page.tables.is_empty() {
+        return Err("Konten terlalu pendek atau tidak bisa di-parse".into());
+    }
+    let http = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; PMPSTI-Bot/1.0)")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let (_, chunks) = page_chunks(&page, &crate::models::ChunkStrategy::Auto, &http, "").await
+        .map_err(|_| "Chunking gagal".to_string())?;
+    let warnings = crate::reader::quality_warnings(&page, &chunks, chunk_max_chars());
+    Ok(WebPageChunks { title: page.title, chunks, warnings })
+}
+
+/// Embeddings for a page's chunks with the shared recipe (title + content, RETRIEVAL_DOCUMENT).
+/// Failed batches come back as empty vectors (stored as NULL, still found by keyword search).
+pub(crate) async fn embed_page_chunks(title: &str, chunks: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
+    if key.is_empty() {
+        return Err("GEMINI_API_KEY tidak dikonfigurasi".into());
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(embed_documents(&http, &key, title, chunks).await)
+}
+
 /// Preview a URL ingest: read and chunk the page exactly like `admin_ingest_url`,
 /// but embed and save nothing. Lets an admin (or a developer) check the extraction first.
 pub async fn admin_preview_url(

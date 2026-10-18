@@ -96,11 +96,19 @@ def queue_source(conn, source_id: int, note: str) -> bool:
     return True
 
 
+# Kinds this worker processes. Web pages (web_site, web_page) are read by the backend itself
+# (src/web_jobs.rs) with its HTML reader; they share the same job queue.
+PDF_KINDS = ("drive_folder", "drive_file", "web_pdf")
+
+
 def reset_stale_jobs(conn, hours: float = 3) -> int:
-    """Jobs left 'running' by a crashed worker go back to the queue."""
+    """PDF jobs left 'running' by a crashed worker go back to the queue."""
     with conn.cursor() as cur:
-        cur.execute("""UPDATE ingest_jobs SET state = 'queued', log = log || E'\\n[worker] dikembalikan ke antrian'
-                       WHERE state = 'running' AND started_at < NOW() - (%s * INTERVAL '1 hour')""", (hours,))
+        cur.execute("""UPDATE ingest_jobs j SET state = 'queued', log = j.log || E'\\n[worker] dikembalikan ke antrian'
+                       FROM sources s
+                       WHERE s.id = j.source_id AND s.kind IN %s
+                         AND j.state = 'running' AND j.started_at < NOW() - (%s * INTERVAL '1 hour')""",
+                    (PDF_KINDS, hours))
         n = cur.rowcount
     conn.commit()
     return n
@@ -114,9 +122,11 @@ def claim_job(conn) -> tuple[int, Source] | None:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """UPDATE ingest_jobs SET state = 'running', started_at = NOW()
-               WHERE id = (SELECT id FROM ingest_jobs WHERE state = 'queued'
-                           ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
-               RETURNING id, source_id, log"""
+               WHERE id = (SELECT j.id FROM ingest_jobs j JOIN sources s ON s.id = j.source_id
+                           WHERE j.state = 'queued' AND s.kind IN %s
+                           ORDER BY j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1)
+               RETURNING id, source_id, log""",
+            (PDF_KINDS,),
         )
         job = cur.fetchone()
         if not job:
