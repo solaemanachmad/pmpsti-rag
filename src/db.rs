@@ -19,6 +19,8 @@ pub struct SearchResult {
     pub page_number:  Option<i32>,
     pub chunk_index:  Option<i32>,
     pub score:        f64,
+    /// Pages covered by this result (filled by `RagEngine::build_context`; empty otherwise).
+    pub pages:        Vec<i32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -53,6 +55,9 @@ pub struct ChatSource {
     pub category:   String,
     pub subcategory: String,
     pub score:      f64,
+    /// Pages cited from this source (PDF documents); missing in sessions saved before 2026-10.
+    #[serde(default)]
+    pub pages:      Vec<i32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -109,6 +114,10 @@ pub struct Database {
 impl Database {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 
     // ════════════════════════════════════════════════════════════
@@ -313,6 +322,12 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS documents_source_url_idx ON documents(source_url)",
             // Auth
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE",
+            // Document lifecycle (docs/design/ingest-from-links.md §4). Existing rows become 'active'.
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'",
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_file_id BIGINT",
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_kind TEXT NOT NULL DEFAULT 'text'",
+            "CREATE INDEX IF NOT EXISTS documents_status_idx ON documents(status)",
+            "CREATE INDEX IF NOT EXISTS documents_source_file_idx ON documents(source_file_id)",
         ];
 
         for sql in &migrations {
@@ -331,6 +346,8 @@ impl Database {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         ").execute(&self.pool).await?;
+
+        crate::sources::setup_tables(&self.pool).await?;
 
         log::info!("Database schema ready.");
         Ok(())
@@ -355,6 +372,7 @@ impl Database {
                     COALESCE(1.0 - (embedding <=> $1), 0.0) AS score
              FROM documents
              WHERE embedding IS NOT NULL
+               AND status = 'active'
                AND ($3::text IS NULL OR category = $3)
              ORDER BY embedding <=> $1
              LIMIT $2",
@@ -393,7 +411,8 @@ impl Database {
                         )
                     ) AS score
              FROM documents
-             WHERE ($4::text IS NULL OR category = $4)
+             WHERE status = 'active'
+               AND ($4::text IS NULL OR category = $4)
              ORDER BY score DESC
              LIMIT $3",
         )
@@ -433,6 +452,7 @@ impl Database {
                     ROW_NUMBER() OVER (ORDER BY embedding <=> $1) AS rank
              FROM documents
              WHERE embedding IS NOT NULL
+               AND status = 'active'
                AND ($3::text IS NULL OR category = $3)
              ORDER BY embedding <=> $1
              LIMIT $2",
@@ -451,7 +471,8 @@ impl Database {
                     ROW_NUMBER() OVER (ORDER BY ts_rank(to_tsvector('indonesian', content),
                                        plainto_tsquery('indonesian', $1), 1) DESC) AS rank
              FROM documents
-             WHERE ($3::text IS NULL OR category = $3)
+             WHERE status = 'active'
+               AND ($3::text IS NULL OR category = $3)
              ORDER BY ts_rank(to_tsvector('indonesian', content),
                               plainto_tsquery('indonesian', $1), 1) DESC
              LIMIT $2",
@@ -487,6 +508,7 @@ impl Database {
                         page_number: row.get("page_number"),
                         chunk_index: chunk_idx,
                         score:       0.0,
+                        pages:       vec![],
                     };
                     (sr, rrf)
                 });
@@ -512,6 +534,7 @@ impl Database {
                         page_number: row.get("page_number"),
                         chunk_index: chunk_idx,
                         score:       0.0,
+                        pages:       vec![],
                     };
                     (sr, rrf)
                 });
@@ -553,6 +576,7 @@ impl Database {
              FROM documents
              WHERE to_tsvector('indonesian', content)
                    @@ to_tsquery('indonesian', $1)
+               AND status = 'active'
                AND ($3::text IS NULL OR category = $3)
              ORDER BY score DESC
              LIMIT $2",
@@ -1323,7 +1347,7 @@ impl Database {
 
     pub async fn list_categories(&self) -> Result<Vec<String>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT DISTINCT category FROM documents ORDER BY category"
+            "SELECT DISTINCT category FROM documents WHERE status = 'active' ORDER BY category"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1399,6 +1423,7 @@ fn rows_to_results(rows: Vec<sqlx::postgres::PgRow>) -> Vec<SearchResult> {
                 page_number: row.try_get("page_number").ok().flatten(),
                 chunk_index: row.try_get("chunk_index").ok().flatten(),
                 score:       row.try_get("score").unwrap_or(0.0),
+                pages:       vec![],
             }
         })
         .collect()
@@ -1511,6 +1536,7 @@ pub struct AdminDocument {
     pub category:      String,
     pub subcategory:   String,
     pub source_url:    String,
+    pub status:        String,
     pub chunk_count:   i64,
 }
 
@@ -1686,6 +1712,7 @@ impl Database {
                     COALESCE(MIN(category),'') as category,
                     COALESCE(MIN(subcategory),'') as subcategory,
                     COALESCE(MIN(source_url),'') as source_url,
+                    COALESCE(MIN(status),'active') as status,
                     COUNT(*) as chunk_count
              FROM documents
              GROUP BY document_id
@@ -1702,6 +1729,7 @@ impl Database {
             category:      r.get("category"),
             subcategory:   r.get("subcategory"),
             source_url:    r.get("source_url"),
+            status:        r.get("status"),
             chunk_count:   r.get("chunk_count"),
         }).collect())
     }
@@ -1778,6 +1806,7 @@ impl Database {
                     page_number, chunk_index, 1.0::float8 AS score
              FROM documents
              WHERE document_id = ANY($1::text[])
+               AND status = 'active'
              ORDER BY document_id, chunk_index"
         )
         .bind(document_ids)

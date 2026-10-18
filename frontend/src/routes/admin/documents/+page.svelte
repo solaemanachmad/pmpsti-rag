@@ -329,6 +329,8 @@
                 <span class="flex flex-wrap items-center gap-1.5 mt-1.5">
                   {#if doc.category}<span class="badge-primary">{doc.category}{doc.subcategory ? ` / ${doc.subcategory}` : ''}</span>{/if}
                   <span class="badge-neutral"><Layers size={10} /> {doc.chunk_count ?? 0} chunks</span>
+                  {#if doc.status === 'archived'}<span class="badge-neutral" title="Replaced by a newer version; not searchable">archived</span>{/if}
+                  {#if doc.status === 'draft'}<a href="/admin/sources" class="badge-primary" title="Waiting for review in Sources">draft · review</a>{/if}
                   {#if doc.source_url}<span class="text-xs text-muted-foreground truncate max-w-[16rem]">{hostname(doc.source_url) || doc.source_url}</span>{/if}
                 </span>
               </span>

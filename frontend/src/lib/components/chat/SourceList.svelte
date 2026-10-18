@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ChevronDown, ExternalLink, FileText } from 'lucide-svelte';
   import type { SourceRef } from '$lib/api/client';
-  import { hostname } from '$lib/format';
+  import { formatPages, hostname } from '$lib/format';
 
   export let sources: SourceRef[];
   export let open = false;
@@ -42,9 +42,9 @@
             {#if src.snippet}
               <span class="block text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{src.snippet}</span>
             {/if}
-            {#if src.category || domain}
+            {#if src.category || domain || src.pages?.length}
               <span class="block text-[10px] text-muted-foreground/80 mt-1 truncate">
-                {[src.category, domain].filter(Boolean).join(' · ')}
+                {[src.pages?.length ? `p. ${formatPages(src.pages)}` : '', src.category, domain].filter(Boolean).join(' · ')}
               </span>
             {/if}
           </span>

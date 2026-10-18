@@ -172,8 +172,92 @@ export const admin = {
 
   // Query logs
   queryLogs: (limit = 50, offset = 0) =>
-    request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?limit=${limit}&offset=${offset}`)
+    request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?limit=${limit}&offset=${offset}`),
+
+  // Sources from links (Google Drive / website PDFs) and draft review
+  sources: () => request<SourceRow[]>('/admin/sources'),
+  createSource: (payload: NewSourcePayload) =>
+    request<{ id: number; kind: string; url: string; message: string }>('/admin/sources', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+  checkSource: (id: number) =>
+    request<{ queued: boolean; message?: string }>(`/admin/sources/${id}/check`, { method: 'POST' }),
+  deleteSource: (id: number) =>
+    request<{ deleted: boolean }>(`/admin/sources/${id}`, { method: 'DELETE' }),
+  sourceJobs: (id: number) => request<IngestJob[]>(`/admin/sources/${id}/jobs`),
+  drafts: () => request<DraftDocument[]>('/admin/drafts'),
+  draftChunks: (document_id: string) =>
+    request<DraftChunk[]>(`/admin/drafts/${encodeURIComponent(document_id)}/chunks`),
+  approveDraft: (document_id: string) =>
+    request<{ activated_chunks: number; archived_documents: string[] }>(
+      `/admin/drafts/${encodeURIComponent(document_id)}/approve`, { method: 'POST' }),
+  rejectDraft: (document_id: string) =>
+    request<{ deleted_chunks: number }>(
+      `/admin/drafts/${encodeURIComponent(document_id)}/reject`, { method: 'POST' })
 };
+
+export type SourceKind = 'drive_folder' | 'drive_file' | 'web_pdf';
+export interface SourceRow {
+  id: number;
+  kind: SourceKind;
+  url: string;
+  title: string;
+  category: string;
+  subcategory: string;
+  version_label: string;
+  valid_from: string | null;
+  supersedes_id: number | null;
+  auto_check: boolean;
+  last_checked: string | null;
+  created_at: string;
+  file_count: number;
+  active_files: number;
+  draft_files: number;
+  last_job_state: 'queued' | 'running' | 'done' | 'failed' | null;
+  last_job_log: string | null;
+}
+export interface NewSourcePayload {
+  url: string;
+  title?: string;
+  category?: string;
+  subcategory?: string;
+  version_label?: string;
+  valid_from?: string;
+  supersedes_id?: number | null;
+  auto_check?: boolean;
+}
+export interface IngestJob {
+  id: number;
+  source_id: number;
+  file_name: string | null;
+  state: string;
+  log: string;
+  stats: Record<string, unknown> | null;
+  created_at: string;
+  finished_at: string | null;
+}
+export interface DraftDocument {
+  document_id: string;
+  title: string;
+  source_id: number | null;
+  source_title: string | null;
+  version_label: string | null;
+  citation_url: string;
+  chunk_count: number;
+  figure_chunks: number;
+  table_chunks: number;
+  page_count: number;
+  job_log: string | null;
+  replaces: string[];
+}
+export interface DraftChunk {
+  id: number;
+  chunk_index: number | null;
+  page_number: number | null;
+  chunk_kind: 'text' | 'table' | 'figure' | string;
+  content: string;
+}
 
 // ── Streaming ask ──
 export function askStream(
@@ -251,6 +335,8 @@ export interface SourceRef {
   category: string;
   subcategory?: string;
   score: number;
+  /** Pages of a PDF document used for the answer (empty for web pages) */
+  pages?: number[];
 }
 export interface SessionListItem {
   id: string;
@@ -273,6 +359,7 @@ export interface ChatSource {
   category: string;
   subcategory?: string;
   score: number;
+  pages?: number[];
 }
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -334,6 +421,8 @@ export interface AdminDocument {
   category: string;
   subcategory: string;
   source_url: string;
+  /** active = searchable, draft = waiting for review, archived = replaced by a newer version */
+  status?: 'active' | 'draft' | 'archived';
   chunk_count: number;
 }
 export interface IngestResponse {

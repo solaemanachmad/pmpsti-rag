@@ -395,7 +395,17 @@ impl RagEngine {
             if content.is_empty() {
                 content = lead.content.clone(); // document not fetched: use the matched chunk itself
             }
-            SearchResult { content, ..lead.clone() }
+            // Pages used (PDF sources) — shown on the source card and in the prompt for citations
+            let mut pages: Vec<i32> = chosen.iter()
+                .filter_map(|&i| doc_chunks.iter().find(|c| c.chunk_index.unwrap_or(0) == i))
+                .filter_map(|c| c.page_number)
+                .collect();
+            if pages.is_empty() {
+                pages.extend(lead.page_number);
+            }
+            pages.sort_unstable();
+            pages.dedup();
+            SearchResult { content, pages, ..lead.clone() }
         }).collect()
     }
 

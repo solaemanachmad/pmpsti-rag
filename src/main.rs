@@ -7,6 +7,8 @@ mod models;
 mod rag;
 mod reader;
 mod search;
+mod sources;
+mod sources_api;
 
 use actix_web::{middleware, web, App, HttpServer, HttpResponse};
 use dashmap::DashMap;
@@ -230,6 +232,16 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/faq/pins",            web::post().to(handlers::admin_faq_pin))
                     .route("/admin/faq/pins/{id}",       web::delete().to(handlers::admin_faq_unpin))
                     .route("/admin/faq/top",             web::get().to(handlers::admin_faq_top))
+                    // Link-based sources (Drive / website PDFs) and draft review
+                    .route("/admin/sources",                web::get().to(sources_api::list_sources))
+                    .route("/admin/sources",                web::post().to(sources_api::create_source))
+                    .route("/admin/sources/{id}",           web::delete().to(sources_api::delete_source))
+                    .route("/admin/sources/{id}/check",     web::post().to(sources_api::check_source))
+                    .route("/admin/sources/{id}/jobs",      web::get().to(sources_api::list_jobs))
+                    .route("/admin/drafts",                 web::get().to(sources_api::list_drafts))
+                    .route("/admin/drafts/{id}/chunks",     web::get().to(sources_api::draft_chunks))
+                    .route("/admin/drafts/{id}/approve",    web::post().to(sources_api::approve_draft))
+                    .route("/admin/drafts/{id}/reject",     web::post().to(sources_api::reject_draft))
             )
     })
     .bind(&addr)?

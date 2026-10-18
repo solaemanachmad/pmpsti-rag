@@ -180,9 +180,10 @@ impl SearchEngine {
     }
 
     fn format_one(i: usize, r: &SearchResult) -> String {
-        let location = match r.page_number {
-            Some(p) => format!("hal. {}", p),
-            None    => "—".to_string(),
+        let location = match (r.pages.as_slice(), r.page_number) {
+            ([], Some(p)) => format!("hal. {}", p),
+            ([], None)    => "—".to_string(),
+            (pages, _)    => format!("hal. {}", format_pages(pages)),
         };
         format!(
             "[{}] {} ({})\nKategori: {} / {}\nSumber: {}\n\n{}",
@@ -194,5 +195,34 @@ impl SearchEngine {
             r.source_url,
             r.content,
         )
+    }
+}
+
+/// "3, 5–7, 10" — compact page list for citations.
+pub fn format_pages(pages: &[i32]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < pages.len() {
+        let start = pages[i];
+        let mut end = start;
+        while i + 1 < pages.len() && pages[i + 1] == end + 1 {
+            i += 1;
+            end = pages[i];
+        }
+        parts.push(if end > start { format!("{start}–{end}") } else { start.to_string() });
+        i += 1;
+    }
+    parts.join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_pages;
+
+    #[test]
+    fn compact_page_ranges() {
+        assert_eq!(format_pages(&[3, 5, 6, 7, 10]), "3, 5–7, 10");
+        assert_eq!(format_pages(&[24]), "24");
+        assert_eq!(format_pages(&[]), "");
     }
 }

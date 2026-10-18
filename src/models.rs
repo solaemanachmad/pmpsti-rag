@@ -90,6 +90,8 @@ pub struct SourceRef {
     pub category:   String,
     pub subcategory: String,
     pub score:      f64,
+    /// Pages of a PDF document used for the answer (empty for web pages)
+    pub pages:      Vec<i32>,
 }
 
 // ══════════════════════════════════════════════════════════════════

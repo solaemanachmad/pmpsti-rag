@@ -529,7 +529,7 @@ pub struct AppState {
 //  MIDDLEWARE HELPER — ekstrak user dari JWT
 // ══════════════════════════════════════════════════════════════════
 
-fn require_auth(req: &HttpRequest, jwt_secret: &str) -> Result<JwtClaims, HttpResponse> {
+pub(crate) fn require_auth(req: &HttpRequest, jwt_secret: &str) -> Result<JwtClaims, HttpResponse> {
     // Coba baca dari httpOnly cookie dulu
     let token_from_cookie = req.cookie("auth_token").map(|c| c.value().to_string());
 
@@ -1010,10 +1010,11 @@ pub async fn ask(
         sources:    relevant.iter().map(|c| ChatSource {
             title:      clean_source_title(&c.title, &c.subcategory),
             snippet:    c.snippet.clone(),
-            source_url: c.source_url.clone(),
+            source_url: crate::sources::citation_link(&c.source_url, &c.pages),
             category:   c.category.clone(),
             subcategory: c.subcategory.clone(),
             score:      c.score,
+            pages:      c.pages.clone(),
         }).collect(),
     });
     session.updated_at = now;
@@ -1037,10 +1038,11 @@ pub async fn ask(
     let sources: Vec<SourceRef> = relevant.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
         snippet:    c.snippet.clone(),
-        source_url: c.source_url.clone(),
+        source_url: crate::sources::citation_link(&c.source_url, &c.pages),
         category:   c.category.clone(),
         subcategory: c.subcategory.clone(),
         score:      c.score,
+        pages:      c.pages.clone(),
     }).collect();
 
     HttpResponse::Ok().json(ApiSuccess::new(AskResponse {
@@ -1133,10 +1135,11 @@ pub async fn ask_public(
     let sources: Vec<SourceRef> = relevant.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
         snippet:    c.snippet.clone(),
-        source_url: c.source_url.clone(),
+        source_url: crate::sources::citation_link(&c.source_url, &c.pages),
         category:   c.category.clone(),
         subcategory: c.subcategory.clone(),
         score:      c.score,
+        pages:      c.pages.clone(),
     }).collect();
 
     HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({

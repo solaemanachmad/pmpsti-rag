@@ -198,6 +198,56 @@ Rows are matched by `id` **and** content (title + content). Rows that differ, or
 
 ---
 
+## 7. Documents from links (Google Drive / website PDFs)
+
+PDFs are not uploaded to the repo or the server. An admin adds a **link** in
+**Admin → Sources**; a worker fetches the PDF, reads it page by page and saves the chunks as
+**drafts**. Drafts are not used in answers until an admin approves them in the same page.
+Answers then cite the document link and the page (direct PDF links open at that page).
+Design: [`docs/design/ingest-from-links.md`](docs/design/ingest-from-links.md).
+
+| Link type | Example | Notes |
+|---|---|---|
+| Google Drive folder | `https://drive.google.com/drive/folders/<id>` | Every PDF / Google Doc inside (also subfolders) |
+| Google Drive file | `https://drive.google.com/file/d/<id>/view` | |
+| Website PDF | `https://jteti.ugm.ac.id/…/panduan.pdf` | The link must open the PDF itself |
+
+Drive files must be shared as **Anyone with the link can view**. If the same PDF is on Drive and on
+the website, add both: the file is stored once and answers cite the website link.
+
+### Lifecycle
+
+```
+Add source → job queued → worker: download → read pages → tables/figures → chunks → embeddings → DRAFT
+          → Admin → Sources → review → Approve (active; older version archived) / Reject (deleted)
+Daily re-check: changed file → new draft → review again. Unchanged files cost nothing.
+```
+
+### Run the worker
+
+The worker runs in **GitHub Actions** (`.github/workflows/ingest-worker.yml`): daily, and on demand
+from the Actions tab ("Ingest worker" → Run workflow). Repository secrets: `DATABASE_URL`,
+`GEMINI_API_KEY`, `GOOGLE_API_KEY` (a Google Cloud API key with the **Google Drive API** enabled).
+
+To start it right after an admin adds a source, set on the backend (Render):
+`GITHUB_REPO=solaemanachmad/pmpsti-rag` and `GITHUB_WORKER_TOKEN` (fine-grained token, this repo only,
+permission *Actions: Read and write*). Without them, new sources wait for the daily run.
+
+Locally (from `scripts/`, with `DATABASE_URL` pointing to a Neon **test** branch):
+
+```bash
+pip install -r worker/requirements.txt
+python -m worker --file "../docs/panduan akademik/Buku Panduan Akademik MTI 2022.pdf" --no-figures  # preview only, no database
+python -m worker                    # process queued jobs
+python -m worker --source-id 3      # queue + process one source
+python -m pytest -q worker/tests    # tests (integration test needs TEST_DATABASE_URL to a throwaway DB)
+```
+
+The worker refuses to write to the database in `PROD_DATABASE_URL` unless `--allow-production` is given
+(the GitHub workflow passes it; drafts are not searchable until approved).
+
+---
+
 ## Code and database workflow
 
 There are **two separate flows**: one for **code** (Git, GitHub, Vercel) and one for **data** (Neon). Normal deployments only use the code flow.
