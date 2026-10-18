@@ -32,13 +32,15 @@ class FigureDescriber:
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY belum di-set")
         self.model = model or os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        # used in order when a model's daily quota is gone (same variable as the backend)
+        fallbacks = os.environ.get("LLM_FALLBACK_MODELS", "gemini-3.1-flash-lite")
+        self.models = list(dict.fromkeys([self.model] + [m.strip() for m in fallbacks.split(",") if m.strip()]))
         self.delay_s = delay_s
         self.session = requests.Session()
         self.calls = 0
 
     def describe(self, png: bytes) -> str | None:
         """Description text, or None when the page has no informative figure."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         body = {
             "contents": [{"role": "user", "parts": [
                 {"text": PROMPT},
@@ -46,15 +48,24 @@ class FigureDescriber:
             ]}],
             "generationConfig": {"temperature": 0.0, "maxOutputTokens": 2048},
         }
-        for attempt in range(6):
+        attempt = 0
+        while attempt < 6:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.models[0]}:generateContent"
             if self.calls:
                 time.sleep(self.delay_s)          # stay under the per-minute free-tier limit
             self.calls += 1
             resp = self.session.post(url, headers={"x-goog-api-key": self.api_key}, json=body, timeout=180)
             if resp.status_code in (429, 500, 503):
                 if "PerDay" in resp.text or "per day" in resp.text.lower():
+                    if len(self.models) > 1:      # this model is done for today: use the next one
+                        print(f"  Kuota harian {self.models.pop(0)} habis, lanjut dengan {self.models[0]}")
+                        continue
                     raise RuntimeError("Kuota harian Gemini habis — coba lagi besok")
                 time.sleep(min(60, 5 * 2 ** attempt))
+                attempt += 1
+                continue
+            if resp.status_code == 404 and len(self.models) > 1:   # model name not available
+                self.models.pop(0)
                 continue
             if not resp.ok:
                 raise RuntimeError(f"Gemini {resp.status_code}: {resp.text[:300]}")

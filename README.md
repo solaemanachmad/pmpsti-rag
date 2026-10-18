@@ -87,6 +87,8 @@ JWT_SECRET=replace-with-a-long-random-secret
 GEMINI_API_KEY=...
 LLM_BACKEND=gemini
 GEMINI_MODEL=gemini-3.5-flash-lite
+# Used in order when the model above hits its quota (429); default gemini-3.1-flash-lite
+# LLM_FALLBACK_MODELS=gemini-3.1-flash-lite
 
 # Alternative LLMs:
 # Ollama (local)

@@ -5,7 +5,8 @@
 #   DATABASE_URL    Neon connection string the backend uses (production)
 #   GEMINI_API_KEY  embeddings + figure descriptions
 #   GOOGLE_API_KEY  Google Cloud API key with the Drive API enabled (public files only)
-# Optional repository variable: GEMINI_MODEL (default gemini-3.5-flash-lite)
+# Optional repository variables: GEMINI_MODEL (default gemini-3.5-flash-lite),
+# LLM_FALLBACK_MODELS (used when the daily quota is gone; default gemini-3.1-flash-lite)
 name: Ingest worker
 
 on:
@@ -51,6 +52,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
+          LLM_FALLBACK_MODELS: ${{ vars.LLM_FALLBACK_MODELS || 'gemini-3.1-flash-lite' }}
           SOURCE_ID: ${{ github.event.inputs.source_id }}
           FIGURES: ${{ github.event_name == 'schedule' || github.event.inputs.figures == 'true' }}
         run: |

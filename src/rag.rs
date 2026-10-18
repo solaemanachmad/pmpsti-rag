@@ -2,6 +2,10 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use crate::db::SearchResult;
 use crate::search::SearchEngine;
 
@@ -55,6 +59,49 @@ impl LlmConfig {
             max_tokens: 2048,
         }
     }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  MODEL FALLBACK (free-tier daily quotas)
+// ══════════════════════════════════════════════════════════════════
+
+/// Models that hit their quota (429) are skipped until this time.
+fn cooldowns() -> &'static Mutex<HashMap<String, Instant>> {
+    static C: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Primary model followed by LLM_FALLBACK_MODELS (comma separated). For Gemini models the
+/// default fallback is gemini-3.1-flash-lite. Models still cooling down after a 429 go last.
+pub fn model_chain(primary: &str) -> Vec<String> {
+    let fallbacks = std::env::var("LLM_FALLBACK_MODELS").unwrap_or_else(|_| {
+        if primary.starts_with("gemini") { "gemini-3.1-flash-lite".to_string() } else { String::new() }
+    });
+    chain_from(primary, &fallbacks, &cooldowns().lock().map(|c| c.clone()).unwrap_or_default(), Instant::now())
+}
+
+fn chain_from(primary: &str, fallbacks: &str, cooling: &HashMap<String, Instant>, now: Instant) -> Vec<String> {
+    let mut all: Vec<String> = Vec::new();
+    for m in std::iter::once(primary).chain(fallbacks.split(',')).map(str::trim).filter(|m| !m.is_empty()) {
+        if !all.iter().any(|x| x == m) { all.push(m.to_string()); }
+    }
+    let (ready, waiting): (Vec<String>, Vec<String>) =
+        all.into_iter().partition(|m| cooling.get(m).map_or(true, |until| *until <= now));
+    ready.into_iter().chain(waiting).collect()
+}
+
+/// After a 429 the model is skipped for a while: an hour when the daily quota is gone,
+/// one minute for a per-minute limit.
+fn mark_exhausted(model: &str, body: &str) {
+    let daily = body.contains("PerDay") || body.to_lowercase().contains("per day");
+    let wait = if daily { Duration::from_secs(3600) } else { Duration::from_secs(60) };
+    if let Ok(mut c) = cooldowns().lock() { c.insert(model.to_string(), Instant::now() + wait); }
+    log::warn!("[llm] {model} rate-limited ({}) — using the next model", if daily { "daily quota" } else { "per minute" });
+}
+
+/// Errors worth trying the next model for: quota, overload, or a model name that does not exist.
+fn try_next_model(status: u16) -> bool {
+    matches!(status, 429 | 404 | 500 | 503)
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -199,10 +246,6 @@ impl RagEngine {
         let model = std::env::var("GEMINI_CLASSIFY_MODEL")
             .or_else(|_| std::env::var("GEMINI_MODEL"))
             .unwrap_or_else(|_| "gemini-3.5-flash-lite".to_string());
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-            model
-        );
 
         let prompt = format!(
             "Klasifikasikan query berikut ke salah satu kategori. \
@@ -236,14 +279,23 @@ impl RagEngine {
             contents: vec![GContent { parts: vec![GPart { text: prompt }] }],
         };
 
-        let resp = self.http.post(&url)
-            .header("x-goog-api-key", &api_key)
-            .json(&body)
-            .send().await.ok()?;
-
-        if !resp.status().is_success() { return None; }
-
-        let data: GeminiResp = resp.json().await.ok()?;
+        let mut data: Option<GeminiResp> = None;
+        for model in model_chain(&model) {
+            let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+            let resp = self.http.post(&url)
+                .header("x-goog-api-key", &api_key)
+                .json(&body)
+                .send().await.ok()?;
+            let status = resp.status().as_u16();
+            if resp.status().is_success() {
+                data = resp.json().await.ok();
+                break;
+            }
+            let text = resp.text().await.unwrap_or_default();
+            if status == 429 { mark_exhausted(&model, &text); }
+            if !try_next_model(status) { return None; }
+        }
+        let data = data?;
         let raw = data.candidates.first()?
             .content.parts.first()?
             .text.trim().to_uppercase();
@@ -502,26 +554,32 @@ impl RagEngine {
     }
 
     async fn call_openai_compatible(&self, messages: &[Message]) -> Result<String> {
-        let req = ChatRequest {
-            model:       self.llm.model.clone(),
-            messages:    messages.to_vec(),
-            max_tokens:  self.llm.max_tokens,
-            temperature: 0.3,
-            stream:      false,
-        };
-
-        let mut builder = self.http.post(&self.llm.api_url).json(&req);
-        if !self.llm.api_key.is_empty() {
-            builder = builder.bearer_auth(&self.llm.api_key);
-        }
-
-        let resp = builder.send().await?;
-
-        if !resp.status().is_success() {
+        let mut last_err = anyhow::anyhow!("no LLM model configured");
+        let mut ok = None;
+        for model in model_chain(&self.llm.model) {
+            let req = ChatRequest {
+                model:       model.clone(),
+                messages:    messages.to_vec(),
+                max_tokens:  self.llm.max_tokens,
+                temperature: 0.3,
+                stream:      false,
+            };
+            let mut builder = self.http.post(&self.llm.api_url).json(&req);
+            if !self.llm.api_key.is_empty() {
+                builder = builder.bearer_auth(&self.llm.api_key);
+            }
+            let resp = builder.send().await?;
             let status = resp.status();
-            let body   = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("LLM API error {}: {}", status, body));
+            if status.is_success() {
+                ok = Some(resp);
+                break;
+            }
+            let body = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 429 { mark_exhausted(&model, &body); }
+            last_err = anyhow::anyhow!("LLM API error {} ({}): {}", status, model, body);
+            if !try_next_model(status.as_u16()) { break; }
         }
+        let Some(resp) = ok else { return Err(last_err) };
 
         let data: ChatResponse = resp.json().await?;
         data.choices
@@ -532,10 +590,6 @@ impl RagEngine {
     }
 
     async fn call_gemini(&self, system_prompt: &str, messages: &[Message]) -> Result<String> {
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.llm.model, self.llm.api_key
-        );
 
         // Konversi messages ke format Gemini — skip system (sudah di system_instruction)
         let contents: Vec<GeminiContent> = messages
@@ -562,13 +616,22 @@ impl RagEngine {
             },
         };
 
-        let resp = self.http.post(&url).json(&req).send().await?;
-
-        if !resp.status().is_success() {
+        let mut last_err = anyhow::anyhow!("no Gemini model configured");
+        let mut ok = None;
+        for model in model_chain(&self.llm.model) {
+            let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+            let resp = self.http.post(&url).header("x-goog-api-key", &self.llm.api_key).json(&req).send().await?;
             let status = resp.status();
-            let body   = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Gemini API error {}: {}", status, body));
+            if status.is_success() {
+                ok = Some(resp);
+                break;
+            }
+            let body = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 429 { mark_exhausted(&model, &body); }
+            last_err = anyhow::anyhow!("Gemini API error {} ({}): {}", status, model, body);
+            if !try_next_model(status.as_u16()) { break; }
         }
+        let Some(resp) = ok else { return Err(last_err) };
 
         let data: GeminiResponse = resp.json().await?;
         data.candidates
@@ -617,4 +680,22 @@ fn build_user_message(query: &str, context: &str, clarification_hint: &str) -> S
          {clarification_hint}\n\
          Pertanyaan: {query}"
     )
+}
+
+#[cfg(test)]
+mod model_chain_tests {
+    use super::*;
+
+    #[test]
+    fn fallbacks_follow_primary_and_cooling_models_go_last() {
+        let now = Instant::now();
+        let none = HashMap::new();
+        assert_eq!(chain_from("gemini-3.5-flash-lite", "gemini-3.1-flash-lite, gemini-3.5-flash-lite", &none, now),
+                   vec!["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]);
+        let mut cooling = HashMap::new();
+        cooling.insert("gemini-3.5-flash-lite".to_string(), now + Duration::from_secs(60));
+        assert_eq!(chain_from("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", &cooling, now),
+                   vec!["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]);
+        assert_eq!(chain_from("llama3.2", "", &none, now), vec!["llama3.2"]);
+    }
 }
