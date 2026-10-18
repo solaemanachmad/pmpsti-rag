@@ -402,6 +402,7 @@ impl RagEngine {
 
         let doc_ids: Vec<String> = groups.iter().map(|(lead, _)| lead.document_id.clone()).collect();
         let all_chunks = self.search.db.fetch_all_chunks_for_documents(&doc_ids).await.unwrap_or_default();
+        let versions = self.search.db.document_versions(&doc_ids).await.unwrap_or_default();
         let per_doc_budget = budget_chars / groups.len();
 
         groups.into_iter().map(|(lead, hit_idxs)| {
@@ -457,7 +458,8 @@ impl RagEngine {
             }
             pages.sort_unstable();
             pages.dedup();
-            SearchResult { content, pages, ..lead.clone() }
+            let version = versions.get(&lead.document_id).map(|v| v.describe()).unwrap_or_default();
+            SearchResult { content, pages, version, ..lead.clone() }
         }).collect()
     }
 
@@ -668,7 +670,12 @@ fn build_system_prompt() -> String {
      7. Format jawaban menggunakan Markdown: **bold** untuk penekanan, tabel dengan | kolom |, \
         daftar dengan - atau nomor. JANGAN tulis simbol ** atau | secara literal tanpa maksud \
         pemformatan.\n\
-     8. Jangan mengarang fakta akademik yang tidak ada di konteks."
+     8. Jangan mengarang fakta akademik yang tidak ada di konteks.\n\
+     9. VERSI: Jika beberapa sumber memberi angka atau aturan berbeda untuk hal yang sama \
+        (misalnya jumlah SKS), pakai sumber dengan baris \"Versi\" yang paling baru \
+        (tanggal berlaku terbaru) sebagai jawaban utama, lalu sebutkan singkat bahwa versi lama \
+        menyebut nilai lain, keduanya dengan nomor sumbernya. Jika versinya tidak diketahui, \
+        sebutkan kedua nilai dan sarankan konfirmasi ke program studi."
         .to_string()
 }
 fn build_user_message(query: &str, context: &str, clarification_hint: &str) -> String {

@@ -470,6 +470,37 @@ pub async fn list_jobs(pool: &PgPool, source_id: i64) -> Result<Vec<JobRow>, Str
     }).collect())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SourceUpdate {
+    pub title:         String,
+    #[serde(default)] pub category:      String,
+    #[serde(default)] pub subcategory:   String,
+    #[serde(default)] pub version_label: String,
+    /// YYYY-MM-DD, empty = unknown
+    #[serde(default)] pub valid_from:    Option<String>,
+    #[serde(default = "default_true")] pub auto_check: bool,
+}
+
+/// Edit a source's details. Version and date are read when answering, so they apply to
+/// its documents at once; title and category apply to documents ingested from now on.
+pub async fn update_source(pool: &PgPool, source_id: i64, u: &SourceUpdate) -> Result<bool, String> {
+    let date = u.valid_from.as_deref().map(str::trim).filter(|d| !d.is_empty());
+    if let Some(d) = date {
+        if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
+            return Err("valid_from must be YYYY-MM-DD".into());
+        }
+    }
+    let res = sqlx::query(
+        "UPDATE sources SET title = $2, category = $3, subcategory = $4, version_label = $5,
+                valid_from = $6::date, auto_check = $7
+         WHERE id = $1",
+    )
+    .bind(source_id).bind(u.title.trim()).bind(u.category.trim()).bind(u.subcategory.trim())
+    .bind(u.version_label.trim()).bind(date).bind(u.auto_check)
+    .execute(pool).await.map_err(|e| e.to_string())?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Delete a source with its files and jobs. Draft chunks are deleted; active chunks are
 /// archived (kept for the record, no longer searchable).
 pub async fn delete_source(pool: &PgPool, source_id: i64) -> Result<(), String> {

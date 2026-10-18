@@ -1620,6 +1620,11 @@ pub struct UpdateDocumentBody {
     pub title:       String,
     pub category:    String,
     pub subcategory: String,
+    /// Sent together; missing = keep the stored version.
+    #[serde(default)]
+    pub version_label: Option<String>,
+    #[serde(default)]
+    pub valid_from:    Option<String>,
 }
 
 pub async fn admin_update_document(
@@ -1633,7 +1638,13 @@ pub async fn admin_update_document(
         return HttpResponse::Forbidden().json(ApiError::new(403, "Hanya admin"));
     }
     let doc_id = path.into_inner();
-    match state.db.admin_update_document(&doc_id, &body.title, &body.category, &body.subcategory).await {
+    let version = body.version_label.as_deref().map(|l| (l, body.valid_from.as_deref()));
+    if let Some(d) = body.valid_from.as_deref().filter(|d| !d.trim().is_empty()) {
+        if chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").is_err() {
+            return HttpResponse::BadRequest().json(ApiError::new(400, "valid_from must be YYYY-MM-DD"));
+        }
+    }
+    match state.db.admin_update_document(&doc_id, &body.title, &body.category, &body.subcategory, version).await {
         Ok(n)  => HttpResponse::Ok().json(ApiSuccess::new(
             serde_json::json!({ "updated_chunks": n })
         )),

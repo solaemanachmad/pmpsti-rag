@@ -263,6 +263,17 @@ pub async fn list_jobs(req: HttpRequest, state: web::Data<AppState>, path: web::
     }
 }
 
+/// PATCH /api/admin/sources/{id}
+pub async fn update_source(req: HttpRequest, state: web::Data<AppState>, path: web::Path<i64>, body: web::Json<sources::SourceUpdate>) -> HttpResponse {
+    if let Err(r) = require_admin(&req, &state) { return r; }
+    match sources::update_source(state.db.pool(), path.into_inner(), &body).await {
+        Ok(true)  => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "updated": true }))),
+        Ok(false) => HttpResponse::NotFound().json(ApiError::new(404, "Source not found")),
+        Err(e) if e.starts_with("valid_from") => HttpResponse::BadRequest().json(ApiError::new(400, e)),
+        Err(e) => server_error(e),
+    }
+}
+
 /// DELETE /api/admin/sources/{id}
 pub async fn delete_source(req: HttpRequest, state: web::Data<AppState>, path: web::Path<i64>) -> HttpResponse {
     if let Err(r) = require_admin(&req, &state) { return r; }

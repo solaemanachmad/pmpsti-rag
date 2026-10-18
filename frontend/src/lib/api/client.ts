@@ -143,7 +143,7 @@ export const admin = {
       `/admin/documents/${encodeURIComponent(document_id)}`,
       { method: 'DELETE' }
     ),
-  updateDocument: (document_id: string, payload: { title: string; category: string; subcategory: string }) =>
+  updateDocument: (document_id: string, payload: { title: string; category: string; subcategory: string; version_label?: string; valid_from?: string }) =>
     request<{ updated_chunks: number }>(
       `/admin/documents/${encodeURIComponent(document_id)}`,
       { method: 'PATCH', body: JSON.stringify(payload) }
@@ -183,6 +183,8 @@ export const admin = {
     }),
   checkSource: (id: number) =>
     request<{ queued: boolean; message?: string }>(`/admin/sources/${id}/check`, { method: 'POST' }),
+  updateSource: (id: number, payload: SourceUpdatePayload) =>
+    request<{ updated: boolean }>(`/admin/sources/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteSource: (id: number) =>
     request<{ deleted: boolean }>(`/admin/sources/${id}`, { method: 'DELETE' }),
   sourceJobs: (id: number) => request<IngestJob[]>(`/admin/sources/${id}/jobs`),
@@ -251,6 +253,15 @@ export interface SourceRow {
   draft_files: number;
   last_job_state: 'queued' | 'running' | 'done' | 'failed' | null;
   last_job_log: string | null;
+}
+export interface SourceUpdatePayload {
+  title: string;
+  category: string;
+  subcategory: string;
+  version_label: string;
+  /** YYYY-MM-DD or '' (unknown) */
+  valid_from: string;
+  auto_check: boolean;
 }
 export interface NewSourcePayload {
   url: string;
@@ -466,6 +477,11 @@ export interface AdminDocument {
   source_title?: string;
   source_kind?: SourceKind | '';
   source_root?: string;
+  /** the document's own version; empty = uses the source's */
+  version_label?: string;
+  valid_from?: string | null;
+  source_version?: string;
+  source_valid_from?: string | null;
 }
 export interface IngestResponse {
   document_id: string;

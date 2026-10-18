@@ -27,6 +27,7 @@
   // Edit
   let editing: AdminDocument | null = null;
   let editTitle = ''; let editCategory = ''; let editSubcategory = '';
+  let editVersion = ''; let editValidFrom = '';
   let savingDoc = false; let editError = '';
 
   onMount(loadDocs);
@@ -72,17 +73,22 @@
     editTitle = doc.title;
     editCategory = doc.category;
     editSubcategory = doc.subcategory ?? '';
+    editVersion = doc.version_label ?? '';
+    editValidFrom = doc.valid_from ?? '';
     editError = '';
   }
 
   async function saveDoc() {
     if (!editing) return;
     const id = editing.document_id;
-    const patch = { title: editTitle.trim(), category: editCategory.trim(), subcategory: editSubcategory.trim() };
+    const patch = {
+      title: editTitle.trim(), category: editCategory.trim(), subcategory: editSubcategory.trim(),
+      version_label: editVersion.trim(), valid_from: editValidFrom || ''
+    };
     savingDoc = true; editError = '';
     try {
       await admin.updateDocument(id, patch);
-      documents = documents.map(d => (d.document_id === id ? { ...d, ...patch } : d));
+      documents = documents.map(d => (d.document_id === id ? { ...d, ...patch, valid_from: patch.valid_from || null } : d));
       const { [id]: _, ...rest } = chunksByDoc;
       chunksByDoc = rest;
       editing = null;
@@ -118,6 +124,13 @@
   function liveCount(g: DocGroup): number {
     return new Set(g.docs.filter(d => d.status === 'active').map(d => d.source_url || d.document_id)).size;
   }
+  /** "2022 Revisi-2 · 2025-11-01": the document's own version, else its source's */
+  function versionOf(d: AdminDocument): string {
+    const own = !!(d.version_label || d.valid_from);   // label and date always as one pair
+    const label = own ? d.version_label : d.source_version;
+    const date = own ? d.valid_from : d.source_valid_from;
+    return [label, date].filter(Boolean).join(' · ');
+  }
   $: archivedCount = documents.filter(d => d.status === 'archived').length;
   $: filtered = documents.filter(d =>
     (showArchived || d.status !== 'archived') &&
@@ -145,6 +158,21 @@
         <input id="edit-subcategory" bind:value={editSubcategory} class="input" />
       </div>
     </div>
+    <div class="grid sm:grid-cols-2 gap-3">
+      <div>
+        <label for="edit-version" class="label">Version</label>
+        <input id="edit-version" bind:value={editVersion} class="input"
+          placeholder={editing?.source_version || 'e.g. 2022 Revisi-2'} />
+      </div>
+      <div>
+        <label for="edit-valid" class="label">Valid from</label>
+        <input id="edit-valid" type="date" bind:value={editValidFrom} class="input" />
+      </div>
+    </div>
+    <p class="text-xs text-muted-foreground -mt-2">
+      When documents disagree (e.g. SKS totals), answers follow the newest “valid from”.
+      {#if editing?.source_id}Leave empty to use the source's version{editing?.source_version ? ` (${editing.source_version})` : ''}.{/if}
+    </p>
     {#if editError}<Alert>{editError}</Alert>{/if}
   </form>
   <svelte:fragment slot="footer">
@@ -217,6 +245,7 @@
                 <span class="flex flex-wrap items-center gap-1.5 mt-1.5">
                   {#if doc.category}<span class="badge-primary">{doc.category}{doc.subcategory ? ` / ${doc.subcategory}` : ''}</span>{/if}
                   <span class="badge-neutral"><Layers size={10} /> {doc.chunk_count ?? 0} chunks</span>
+                  {#if versionOf(doc)}<span class="badge-neutral" title="Version used when sources disagree">{versionOf(doc)}</span>{/if}
                   {#if doc.status === 'archived'}<span class="badge-neutral" title="Replaced by a newer version; not searchable">archived</span>{/if}
                   {#if doc.status === 'draft'}<a href="/admin/sources" class="badge-primary" title="Waiting for review in Sources">draft · review</a>{/if}
                   {#if doc.source_url}<span class="text-xs text-muted-foreground truncate max-w-[16rem]">{hostname(doc.source_url) || doc.source_url}</span>{/if}
