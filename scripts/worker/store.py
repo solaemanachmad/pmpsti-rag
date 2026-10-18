@@ -74,7 +74,11 @@ def queue_rechecks(conn, min_hours: float) -> int:
             """INSERT INTO ingest_jobs (source_id, log)
                SELECT s.id, 'Cek ulang terjadwal' FROM sources s
                WHERE s.auto_check
-                 AND (s.last_checked IS NULL OR s.last_checked < NOW() - (%s * INTERVAL '1 hour'))
+                 -- due after the source's own interval (daily / weekly / every N days); the
+                 -- 4 h slack keeps a daily run from skipping a day when it starts a bit earlier
+                 AND (s.last_checked IS NULL OR s.last_checked < NOW() - GREATEST(
+                        %s * INTERVAL '1 hour',
+                        COALESCE(s.check_every_days, 1) * INTERVAL '1 day' - INTERVAL '4 hours'))
                  AND NOT EXISTS (SELECT 1 FROM ingest_jobs j
                                  WHERE j.source_id = s.id AND j.state IN ('queued','running'))""",
             (min_hours,),

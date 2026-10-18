@@ -229,7 +229,7 @@ the website, add both: the file is stored once and answers cite the website link
 ```
 Add source → job queued → backend (web pages) or worker (PDFs): read → chunks → embeddings → DRAFT
           → Admin → Sources → review → Approve / Approve all (active; older version archived) / Reject
-Daily re-check: changed page/file → new draft → review again. Unchanged content costs nothing.
+Re-check (daily, weekly, monthly or every N days per source; or off): changed page/file → new draft → review again. Unchanged content costs nothing.
 ```
 
 ### Versions (when sources disagree)

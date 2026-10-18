@@ -102,6 +102,9 @@ pub async fn create_source(req: HttpRequest, state: web::Data<AppState>, body: w
             return HttpResponse::BadRequest().json(ApiError::new(400, "valid_from harus berformat YYYY-MM-DD"));
         }
     }
+    if let Err(e) = sources::valid_interval(body.check_every_days) {
+        return HttpResponse::BadRequest().json(ApiError::new(400, e));
+    }
     let user_id = claims.sub.parse::<i64>().ok();
     match sources::create_source(state.db.pool(), &body, &link, user_id).await {
         Ok(id) => HttpResponse::Created().json(ApiSuccess::new(serde_json::json!({
@@ -269,7 +272,7 @@ pub async fn update_source(req: HttpRequest, state: web::Data<AppState>, path: w
     match sources::update_source(state.db.pool(), path.into_inner(), &body).await {
         Ok(true)  => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "updated": true }))),
         Ok(false) => HttpResponse::NotFound().json(ApiError::new(404, "Source not found")),
-        Err(e) if e.starts_with("valid_from") => HttpResponse::BadRequest().json(ApiError::new(400, e)),
+        Err(e) if e.starts_with("valid_from") || e.starts_with("check_every_days") => HttpResponse::BadRequest().json(ApiError::new(400, e)),
         Err(e) => server_error(e),
     }
 }

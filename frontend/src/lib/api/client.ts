@@ -246,6 +246,7 @@ export interface SourceRow {
   valid_from: string | null;
   supersedes_id: number | null;
   auto_check: boolean;
+  check_every_days: number;
   last_checked: string | null;
   created_at: string;
   file_count: number;
@@ -262,6 +263,7 @@ export interface SourceUpdatePayload {
   /** YYYY-MM-DD or '' (unknown) */
   valid_from: string;
   auto_check: boolean;
+  check_every_days: number;
 }
 export interface NewSourcePayload {
   url: string;
@@ -272,6 +274,7 @@ export interface NewSourcePayload {
   valid_from?: string;
   supersedes_id?: number | null;
   auto_check?: boolean;
+  check_every_days?: number;
   kind?: 'web_site' | 'web_page' | 'web_pdf';
   pages?: string[];
   discover?: 'manual' | 'auto';

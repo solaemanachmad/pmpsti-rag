@@ -59,6 +59,8 @@ pub async fn setup_tables(pool: &PgPool) -> anyhow::Result<()> {
         "CREATE INDEX IF NOT EXISTS source_files_source_idx ON source_files(source_id)",
         // web_site: 'manual' = only registered pages, 'auto' = also look for new pages under the root
         "ALTER TABLE sources ADD COLUMN IF NOT EXISTS discover TEXT NOT NULL DEFAULT 'manual'",
+        // How often the scheduled run re-checks a source (when auto_check is on)
+        "ALTER TABLE sources ADD COLUMN IF NOT EXISTS check_every_days INT NOT NULL DEFAULT 1",
         // HNSW index over searchable chunks only. pgvector filters a plain HNSW scan AFTER the
         // index lookup, so drafts/archived versions (near-identical to the active one) could
         // fill the candidate list and leave semantic search with too few active results.
@@ -156,6 +158,8 @@ pub struct NewSource {
     #[serde(default)] pub valid_from:    Option<String>,
     #[serde(default)] pub supersedes_id: Option<i64>,
     #[serde(default = "default_true")] pub auto_check: bool,
+    /// Re-check every N days (1 = daily, 7 = weekly, 30 = monthly); used when auto_check is on
+    #[serde(default = "default_every")] pub check_every_days: i32,
     /// "web_site" | "web_page" | "web_pdf" to override the kind guessed from the link
     #[serde(default)] pub kind:          Option<String>,
     /// web_site: pages to register now (each must lie under `url`, the site root)
@@ -164,6 +168,12 @@ pub struct NewSource {
     #[serde(default)] pub discover:      Option<String>,
 }
 fn default_true() -> bool { true }
+fn default_every() -> i32 { 1 }
+
+/// Re-check interval accepted from the admin: 1 day to a year.
+pub fn valid_interval(days: i32) -> Result<i32, String> {
+    if (1..=365).contains(&days) { Ok(days) } else { Err("check_every_days must be between 1 and 365".into()) }
+}
 
 #[derive(Debug, Serialize)]
 pub struct FileRow {
@@ -189,6 +199,7 @@ pub struct SourceRow {
     pub valid_from:    Option<String>,
     pub supersedes_id: Option<i64>,
     pub auto_check:    bool,
+    pub check_every_days: i32,
     pub last_checked:  Option<String>,
     pub created_at:    String,
     pub file_count:    i64,
@@ -282,14 +293,14 @@ pub async fn create_source(pool: &PgPool, s: &NewSource, link: &ParsedLink, user
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let row = sqlx::query(
         "INSERT INTO sources (kind, url, external_id, title, category, subcategory, version_label,
-                              valid_from, supersedes_id, auto_check, created_by, discover)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10,$11,$12)
+                              valid_from, supersedes_id, auto_check, created_by, discover, check_every_days)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10,$11,$12,$13)
          RETURNING id",
     )
     .bind(link.kind).bind(&link.url).bind(&link.external_id)
     .bind(s.title.trim()).bind(s.category.trim()).bind(s.subcategory.trim()).bind(s.version_label.trim())
     .bind(s.valid_from.as_deref().filter(|v| !v.trim().is_empty()))
-    .bind(s.supersedes_id).bind(s.auto_check).bind(user_id).bind(discover)
+    .bind(s.supersedes_id).bind(s.auto_check).bind(user_id).bind(discover).bind(valid_interval(s.check_every_days)?)
     .fetch_one(&mut *tx).await
     .map_err(|e| if e.to_string().contains("sources_url_key") {
         "Link ini sudah terdaftar sebagai sumber".to_string()
@@ -392,7 +403,7 @@ pub async fn approve_source(pool: &PgPool, source_id: i64) -> Result<(u64, usize
 pub async fn list_sources(pool: &PgPool) -> Result<Vec<SourceRow>, String> {
     let rows = sqlx::query(
         "SELECT s.id, s.kind, s.url, s.discover, s.title, s.category, s.subcategory, s.version_label,
-                s.valid_from::text AS valid_from, s.supersedes_id, s.auto_check,
+                s.valid_from::text AS valid_from, s.supersedes_id, s.auto_check, s.check_every_days,
                 to_json(s.last_checked)#>>'{}' AS last_checked, to_json(s.created_at)#>>'{}' AS created_at,
                 (SELECT COUNT(*) FROM source_files f WHERE f.source_id = s.id) AS file_count,
                 (SELECT COUNT(DISTINCT d.document_id) FROM documents d JOIN source_files f ON f.id = d.source_file_id
@@ -420,6 +431,7 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<SourceRow>, String> {
         valid_from: r.get("valid_from"),
         supersedes_id: r.get("supersedes_id"),
         auto_check: r.get("auto_check"),
+        check_every_days: r.get("check_every_days"),
         last_checked: r.get("last_checked"),
         created_at: r.get::<Option<String>, _>("created_at").unwrap_or_default(),
         file_count: r.get("file_count"),
@@ -479,6 +491,7 @@ pub struct SourceUpdate {
     /// YYYY-MM-DD, empty = unknown
     #[serde(default)] pub valid_from:    Option<String>,
     #[serde(default = "default_true")] pub auto_check: bool,
+    #[serde(default = "default_every")] pub check_every_days: i32,
 }
 
 /// Edit a source's details. Version and date are read when answering, so they apply to
@@ -490,13 +503,14 @@ pub async fn update_source(pool: &PgPool, source_id: i64, u: &SourceUpdate) -> R
             return Err("valid_from must be YYYY-MM-DD".into());
         }
     }
+    let every = valid_interval(u.check_every_days)?;
     let res = sqlx::query(
         "UPDATE sources SET title = $2, category = $3, subcategory = $4, version_label = $5,
-                valid_from = $6::date, auto_check = $7
+                valid_from = $6::date, auto_check = $7, check_every_days = $8
          WHERE id = $1",
     )
     .bind(source_id).bind(u.title.trim()).bind(u.category.trim()).bind(u.subcategory.trim())
-    .bind(u.version_label.trim()).bind(date).bind(u.auto_check)
+    .bind(u.version_label.trim()).bind(date).bind(u.auto_check).bind(every)
     .execute(pool).await.map_err(|e| e.to_string())?;
     Ok(res.rows_affected() > 0)
 }
