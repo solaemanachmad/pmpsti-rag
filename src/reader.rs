@@ -14,6 +14,20 @@ pub struct PageTable {
     /// Column names; empty when the table has no header row.
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    /// Headings above the table below the chapter level, e.g. `["1.5 Analisis SWOT"]`
+    /// (the chapter `h1` repeats the page title, so it is left out).
+    pub section: Vec<String>,
+}
+
+/// A part of the main text under one heading.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Section {
+    /// Headings above this text, outermost first, e.g.
+    /// `["1 Pendahuluan", "1.1 Identitas Prodi", "1.1.4 Program Studi"]`. Empty before the
+    /// first heading (and for pages without headings).
+    pub path: Vec<String>,
+    /// The section's own text (not its subsections'), one line per text node.
+    pub text: String,
 }
 
 /// What `extract_page` reads from a page.
@@ -22,6 +36,8 @@ pub struct PageContent {
     pub title: String,
     /// Main text without tables, one paragraph or line per line.
     pub text: String,
+    /// The same text split at headings, in page order (see `sections`).
+    pub sections: Vec<Section>,
     pub tables: Vec<PageTable>,
 }
 
@@ -63,6 +79,112 @@ pub fn visible_text(root: ElementRef) -> String {
         .join("\n")
 }
 
+/// Headings that start a new section, with their level. `h4`–`h6` are usually short labels
+/// ("Visi", "Misi") — splitting there would make tiny chunks, so they stay in the text.
+/// Page chrome whose headings are not part of the content outline (e.g. Quarto's
+/// "Table of contents" `h2` inside `<nav id="TOC">`).
+const NO_HEADINGS_IN: &[&str] = &["nav", "aside", "footer"];
+
+fn section_level(tag: &str) -> Option<usize> {
+    match tag {
+        "h1" => Some(1),
+        "h2" => Some(2),
+        "h3" => Some(3),
+        _ => None,
+    }
+}
+
+/// The visible text of `root` (same rules as `visible_text`) split into sections at
+/// `h1`–`h3`, each with its heading path. Lets every chunk say where it comes from, so
+/// "Visi" of the study programme is not confused with "Visi" of the faculty.
+///
+/// Headings inside skipped elements are still read: Quarto puts the chapter title `h1`
+/// in a `<header>`. Sections without text (a heading directly followed by a
+/// subheading) are dropped; their heading still appears in the children's paths.
+pub fn sections(root: ElementRef) -> Vec<Section> {
+    fn flush(path: &[(usize, String)], lines: &mut Vec<String>, out: &mut Vec<Section>) {
+        if !lines.is_empty() {
+            out.push(Section {
+                path: path.iter().map(|(_, h)| h.clone()).collect(),
+                text: std::mem::take(lines).join("\n"),
+            });
+        }
+    }
+
+    fn walk(
+        el: ElementRef,
+        headings_only: bool,
+        path: &mut Vec<(usize, String)>,
+        lines: &mut Vec<String>,
+        out: &mut Vec<Section>,
+    ) {
+        for child in el.children() {
+            match child.value() {
+                Node::Text(text) if !headings_only => {
+                    let line = text.replace('\u{a0}', " ").trim().to_string();
+                    if !line.is_empty() {
+                        lines.push(line);
+                    }
+                }
+                Node::Element(_) => {
+                    let Some(child_el) = ElementRef::wrap(child) else { continue };
+                    let tag = child_el.value().name();
+                    if let Some(level) = section_level(tag) {
+                        flush(path, lines, out);
+                        while path.last().is_some_and(|(l, _)| *l >= level) {
+                            path.pop();
+                        }
+                        let heading = collapse(&child_el.text().collect::<Vec<_>>().join(" "));
+                        if !heading.is_empty() {
+                            path.push((level, heading));
+                        }
+                    } else if !NO_HEADINGS_IN.contains(&tag) {
+                        let skip = headings_only || SKIP_TEXT_IN.contains(&tag);
+                        walk(child_el, skip, path, lines, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let (mut path, mut lines, mut out) = (Vec::new(), Vec::new(), Vec::new());
+    walk(root, false, &mut path, &mut lines, &mut out);
+    flush(&path, &mut lines, &mut out);
+    out
+}
+
+/// Headings (`h1`–`h3`, with level) in force at `target`: the last heading of each level
+/// before it in page order within `scope`, ignoring `NO_HEADINGS_IN` chrome.
+fn heading_path_at(scope: ElementRef, target: ElementRef) -> Vec<(usize, String)> {
+    let mut path: Vec<(usize, String)> = Vec::new();
+    for node in scope.descendants() {
+        if node.id() == target.id() {
+            break;
+        }
+        let Some(el) = ElementRef::wrap(node) else { continue };
+        let Some(level) = section_level(el.value().name()) else { continue };
+        let in_chrome = el.ancestors().filter_map(ElementRef::wrap)
+            .any(|a| NO_HEADINGS_IN.contains(&a.value().name()));
+        if in_chrome {
+            continue;
+        }
+        while path.last().is_some_and(|(l, _)| *l >= level) {
+            path.pop();
+        }
+        let heading = collapse(&el.text().collect::<Vec<_>>().join(" "));
+        if !heading.is_empty() {
+            path.push((level, heading));
+        }
+    }
+    path
+}
+
+/// `heading_path_at` without the chapter level, for labelling a table.
+fn table_section(scope: ElementRef, table: ElementRef) -> Vec<String> {
+    heading_path_at(scope, table).into_iter().filter(|(l, _)| *l > 1).map(|(_, h)| h).collect()
+}
+
 fn cell_text(v: &Value) -> String {
     match v {
         Value::String(s) => html_to_text(s),
@@ -80,8 +202,12 @@ fn cell_text(v: &Value) -> String {
 pub fn json_tables(document: &Html) -> Vec<PageTable> {
     let sel = Selector::parse("script[type='application/json']").unwrap();
     document.select(&sel)
-        .filter_map(|script| serde_json::from_str::<Value>(&script.text().collect::<String>()).ok())
-        .filter_map(|v| htmlwidget_table(&v).or_else(|| datatables_table(&v)))
+        .filter_map(|script| {
+            let v = serde_json::from_str::<Value>(&script.text().collect::<String>()).ok()?;
+            let mut table = htmlwidget_table(&v).or_else(|| datatables_table(&v))?;
+            table.section = table_section(document.root_element(), script);
+            Some(table)
+        })
         .collect()
 }
 
@@ -99,7 +225,7 @@ fn htmlwidget_table(v: &Value) -> Option<PageTable> {
         })
         .unwrap_or_default();
     let caption = x.get("caption").and_then(Value::as_str).map(html_to_text).unwrap_or_default();
-    Some(PageTable { caption, headers, rows })
+    Some(PageTable { caption, headers, rows, section: vec![] })
 }
 
 fn datatables_table(v: &Value) -> Option<PageTable> {
@@ -115,7 +241,7 @@ fn datatables_table(v: &Value) -> Option<PageTable> {
             .filter_map(|c| c.get("title").or_else(|| c.get("data")).and_then(Value::as_str).map(html_to_text))
             .collect())
         .unwrap_or_default();
-    Some(PageTable { caption: String::new(), headers, rows })
+    Some(PageTable { caption: String::new(), headers, rows, section: vec![] })
 }
 
 /// True when `el` sits inside a JSON-backed widget: the visible table there is only the
@@ -160,7 +286,7 @@ pub fn html_tables(root: ElementRef) -> Vec<PageTable> {
         }
         if !rows.is_empty() {
             let caption = table.select(&caption_sel).next().map(text).unwrap_or_default();
-            tables.push(PageTable { caption, headers, rows });
+            tables.push(PageTable { caption, headers, rows, section: table_section(root, table) });
         }
     }
     tables
@@ -209,7 +335,8 @@ const MAX_SUMMARY_CHARS: usize = 4_000;
 /// 1. a summary chunk with the total number of rows and every row's name — so
 ///    "berapa jumlah …?" / "daftar lengkap …" can be answered from a single chunk;
 /// 2. the rows (`row_line`) grouped up to `max_chars`, each chunk starting with the page
-///    title, caption and row range, so a chunk is understandable on its own.
+///    title, the table's section (below chapter level), caption and row range, so a chunk
+///    is understandable on its own.
 ///
 /// The generated words ("Jumlah data", "baris") are Indonesian on purpose: the corpus and
 /// the students' questions are Indonesian, and these words must match their questions.
@@ -222,7 +349,11 @@ pub fn table_chunks(page_title: &str, table: &PageTable, max_chars: usize) -> Ve
         return vec![];
     }
     let total = lines.len();
-    let label = if table.caption.is_empty() { page_title.to_string() } else { format!("{page_title} — {}", table.caption) };
+    let mut label = page_title.to_string();
+    for part in table.section.iter().chain(std::iter::once(&table.caption)).filter(|p| !p.is_empty()) {
+        label.push_str(" — ");
+        label.push_str(part);
+    }
 
     let mut chunks = vec![summary_chunk(&label, table, total)];
     let mut start = 0;
@@ -274,6 +405,7 @@ mod tests {
     const D_TENDIK: &str = include_str!("../tests/fixtures/d_tendik.html");
     const C_EWMP: &str = include_str!("../tests/fixtures/c_ewmp.html");
     const TENAGA_PENDIDIK: &str = include_str!("../tests/fixtures/tenaga_pendidik.html");
+    const INTRODUCTION: &str = include_str!("../tests/fixtures/introduction.html");
 
     #[test]
     fn reads_all_rows_from_column_major_widget_json() {
@@ -327,6 +459,44 @@ mod tests {
     }
 
     #[test]
+    fn sections_carry_their_heading_path() {
+        let doc = Html::parse_document(INTRODUCTION);
+        let root = doc.select(&Selector::parse("main#quarto-document-content").unwrap()).next().unwrap();
+        let secs = sections(root);
+        // The chapter h1 sits in Quarto's <header>, which is skipped as text but read as a heading.
+        assert!(secs.iter().all(|s| s.path.first().map(String::as_str) == Some("1 Pendahuluan")),
+            "every section is under the chapter: {:?}", secs.iter().map(|s| &s.path).collect::<Vec<_>>());
+        let prodi = secs.iter()
+            .find(|s| s.path.last().map(String::as_str) == Some("1.1.4 Program Studi"))
+            .expect("section 1.1.4");
+        assert_eq!(prodi.path, ["1 Pendahuluan", "1.1 Identitas Prodi", "1.1.4 Program Studi"]);
+        // h4 labels stay inside the section text
+        assert!(prodi.text.contains("Visi") && prodi.text.contains("Misi"), "{}", prodi.text);
+        // A later h2 closes the h3 above it
+        let swot = secs.iter().find(|s| s.path.last().map(String::as_str) == Some("1.5 Analisis SWOT")).unwrap();
+        assert_eq!(swot.path.len(), 2);
+    }
+
+    #[test]
+    fn tables_are_labelled_with_their_section_below_chapter_level() {
+        let doc = Html::parse_document(INTRODUCTION);
+        let root = doc.select(&Selector::parse("main#quarto-document-content").unwrap()).next().unwrap();
+        let swot = &html_tables(root)[0];
+        assert_eq!(swot.section, ["1.5 Analisis SWOT"]);
+        assert!(table_chunks("1 Pendahuluan", swot, 1200)[0].starts_with("1 Pendahuluan — 1.5 Analisis SWOT\n"));
+        // A table directly under the chapter title keeps the E5 label (no repeated heading)
+        let tendik = &json_tables(&Html::parse_document(D_TENDIK))[0];
+        assert!(tendik.section.is_empty(), "{:?}", tendik.section);
+    }
+
+    #[test]
+    fn sections_without_headings_is_one_section() {
+        let doc = Html::parse_document("<body><main><p>Hello</p><p>world</p><script>x()</script></main></body>");
+        let main = doc.select(&Selector::parse("main").unwrap()).next().unwrap();
+        assert_eq!(sections(main), [Section { path: vec![], text: "Hello\nworld".into() }]);
+    }
+
+    #[test]
     fn visible_text_skips_scripts_and_tables() {
         let doc = Html::parse_document(
             "<body><main><p>Hello&nbsp;world</p><script>var x = 1;</script>\
@@ -347,6 +517,7 @@ mod show {
     #[ignore = "prints example output; run explicitly"]
     fn show_page_chunks() {
         for (name, html, content) in [
+            ("introduction", include_str!("../tests/fixtures/introduction.html"), "main#quarto-document-content"),
             ("d_tendik", include_str!("../tests/fixtures/d_tendik.html"), "main#quarto-document-content"),
             ("c_ewmp", include_str!("../tests/fixtures/c_ewmp.html"), "main#quarto-document-content"),
             ("tenaga_pendidik", include_str!("../tests/fixtures/tenaga_pendidik.html"), "article .post-content"),
@@ -355,7 +526,11 @@ mod show {
             let root = doc.select(&Selector::parse(content).unwrap()).next().unwrap();
             let mut tables = json_tables(&doc);
             tables.extend(html_tables(root));
-            println!("\n================ {name}: {} table(s) ================", tables.len());
+            let secs = sections(root);
+            println!("\n================ {name}: {} section(s), {} table(s) ================", secs.len(), tables.len());
+            for s in secs.iter().take(8) {
+                println!("[{}] {} chars: {}", s.path.join(" > "), s.text.len(), s.text.chars().take(80).collect::<String>().replace('\n', " / "));
+            }
             for t in &tables {
                 let chunks = table_chunks(name, t, 1200);
                 println!("rows {} | headers {:?} | {} chunks", t.rows.len(), t.headers, chunks.len());

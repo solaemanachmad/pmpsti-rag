@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod email;
+mod enrich;
 mod handlers;
 mod models;
 mod rag;

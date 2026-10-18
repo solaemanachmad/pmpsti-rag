@@ -11,7 +11,9 @@ Cara pakai di ingest.py:
   from text_enrichment import enrich_text, enrich_chunk
 """
 
+import json
 import re
+from pathlib import Path
 from typing import Optional
 
 # ──────────────────────────────────────────────────────────────────
@@ -19,71 +21,12 @@ from typing import Optional
 #  Tambah/edit sesuai dokumen spesifik kamu
 # ──────────────────────────────────────────────────────────────────
 
+# Shared with the Rust URL ingest (src/enrich.rs), so both expand the same words.
+# Edit src/acronyms.json, not this file. Keys starting with "_" are comments.
+_ACRONYMS_FILE = Path(__file__).resolve().parent.parent / "src" / "acronyms.json"
 ACRONYMS: dict[str, str] = {
-    # Akademik umum
-    "SKS":    "Satuan Kredit Semester",
-    "KRS":    "Kartu Rencana Studi",
-    "KHS":    "Kartu Hasil Studi",
-    "IPK":    "Indeks Prestasi Kumulatif",
-    "IP":     "Indeks Prestasi",
-    "IPS":    "Indeks Prestasi Semester",
-    "TA":     "Tugas Akhir",
-    "KKN":    "Kuliah Kerja Nyata",
-    "PKL":    "Praktik Kerja Lapangan",
-    "DO":     "Drop Out",
-
-    # Program studi / institusi
-    "PMPSTI": "Program Magister Program Studi Teknologi Informasi",  # official name (guidebook p. 4)
-    "MTI":    "Magister Teknologi Informasi",
-    "DTETI":  "Departemen Teknik Elektro dan Teknologi Informasi",
-    "FT":     "Fakultas Teknik",
-    "UGM":    "Universitas Gadjah Mada",
-    "FMIPA":  "Fakultas Matematika dan Ilmu Pengetahuan Alam",
-    "FK":     "Fakultas Kedokteran",
-
-    # Jabatan / SDM
-    "EWMP":   "Ekuivalensi Waktu Mendidik Penuh",
-    "BKD":    "Beban Kerja Dosen",
-    "KBK":    "Kelompok Bidang Keahlian",
-    "NIDN":   "Nomor Induk Dosen Nasional",
-    "NIP":    "Nomor Induk Pegawai",
-    "NIM":    "Nomor Induk Mahasiswa",
-    "tendik": "Tenaga Kependidikan",
-
-    # Administrasi
-    "SK":     "Surat Keputusan",
-    "MOU":    "Memorandum of Understanding",
-    "PKS":    "Perjanjian Kerja Sama",
-    "RKAT":   "Rencana Kegiatan dan Anggaran Tahunan",
-    "SPP":    "Sumbangan Pembinaan Pendidikan",
-    "UKT":    "Uang Kuliah Tunggal",
-    "BPP":    "Biaya Penyelenggaraan Pendidikan",
-
-    # Dokumen akademik
-    "RPS":    "Rencana Pembelajaran Semester",
-    "SAP":    "Satuan Acara Perkuliahan",
-    "GBPP":   "Garis-garis Besar Program Pengajaran",
-    "KKNI":   "Kerangka Kualifikasi Nasional Indonesia",
-    "CPL":    "Capaian Pembelajaran Lulusan",
-    "CPMK":   "Capaian Pembelajaran Mata Kuliah",
-    "OBE":    "Outcome Based Education",
-
-    # Proses tesis/penelitian
-    "KTI":    "Karya Tulis Ilmiah",
-    "DOI":    "Digital Object Identifier",
-    "ISSN":   "International Standard Serial Number",
-    "ISBN":   "International Standard Book Number",
-
-    # Teknologi informasi
-    "TI":     "Teknologi Informasi",
-    "SI":     "Sistem Informasi",
-    "AI":     "Kecerdasan Buatan",
-    "ML":     "Machine Learning",
-    "DL":     "Deep Learning",
-    "NLP":    "Natural Language Processing",
-    "DB":     "Database",
-    "API":    "Application Programming Interface",
-    "IoT":    "Internet of Things",
+    k: v for k, v in json.loads(_ACRONYMS_FILE.read_text(encoding="utf-8")).items()
+    if not k.startswith("_")
 }
 
 # Regex per acronym, standing alone (word boundaries). Built once at import.
@@ -92,10 +35,12 @@ _ACRONYM_PATTERNS: list[tuple[re.Pattern, str, str]] = []
 def _build_patterns():
     for acr, expansion in ACRONYMS.items():
         # Match only acronyms that are NOT already explained next to them:
-        # "3 SKS" → "3 Satuan Kredit Semester (SKS)", but "SKS (Satuan …)" stays.
+        # "3 SKS" → "3 Satuan Kredit Semester (SKS)", but "SKS (Satuan …)" and
+        # "… Teknologi Informasi (PMPSTI)" stay. Same rules as src/enrich.rs.
         # Case-SENSITIVE on purpose: acronyms are written as in ACRONYMS ("SKS", "IoT").
         # Ignoring case turned ordinary words into acronyms ("api" = fire → "API").
         pat = re.compile(
+            r'(?<!\()'          # not directly after ( (already explained)
             r'\b' + re.escape(acr) + r'\b'
             r'(?!\s*[\(\[])'    # not followed by ( or [ (already explained)
         )

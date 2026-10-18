@@ -1881,7 +1881,7 @@ fn extract_page(html: &str, url: &str, title_override: Option<String>) -> crate:
     let mut tables = reader::json_tables(&document);
     tables.extend(reader::html_tables(root));
 
-    reader::PageContent { title, text: reader::visible_text(root), tables }
+    reader::PageContent { title, text: reader::visible_text(root), sections: reader::sections(root), tables }
 }
 
 /// Fetch a URL and turn it into a title and plain text (stages 1–3 of URL ingest).
@@ -1910,23 +1910,42 @@ async fn read_url(url: &str, title_override: Option<String>) -> Result<crate::re
     Ok(page)
 }
 
-/// All chunks for a page: its text chunked with the requested strategy, then every table
-/// chunked by `reader::table_chunks` (summary + rows with column names).
+/// All chunks for a page: each section's text, with acronyms expanded, chunked with the
+/// requested strategy and prefixed with its heading path, then every table chunked by
+/// `reader::table_chunks` (summary + rows with column names).
 async fn page_chunks(
     page:       &crate::reader::PageContent,
     strategy:   &crate::models::ChunkStrategy,
     http:       &reqwest::Client,
     gemini_key: &str,
 ) -> Result<(crate::models::ChunkStrategy, Vec<String>), HttpResponse> {
-    let (used, mut chunks) = if page.text.len() >= 50 {
-        chunk_text(&page.text, strategy, http, gemini_key).await?
-    } else {
-        (strategy.clone(), Vec::new())
-    };
+    let mut used = strategy.clone();
+    let mut chunks = Vec::new();
+    if page.text.len() >= 50 {
+        for (i, section) in page.sections.iter().enumerate() {
+            // Expand acronyms per section (first 2 uses each), so every section explains its own
+            let text = crate::enrich::expand_acronyms(&section.text, 2);
+            let (section_used, section_chunks) = chunk_text(&text, strategy, http, gemini_key).await?;
+            if i == 0 {
+                used = section_used; // reported in the preview; `auto` may differ per section
+            }
+            chunks.extend(with_heading_path(&section.path, section_chunks));
+        }
+    }
     for table in &page.tables {
         chunks.extend(crate::reader::table_chunks(&page.title, table, chunk_max_chars()));
     }
     Ok((used, chunks))
+}
+
+/// Put the heading path (e.g. "1 Pendahuluan > 1.1 Identitas Prodi") as the first line of
+/// every chunk of a section, so search, embedding and the LLM all see where the text is from.
+fn with_heading_path(path: &[String], chunks: Vec<String>) -> Vec<String> {
+    if path.is_empty() {
+        return chunks;
+    }
+    let heading = path.join(" > ");
+    chunks.into_iter().map(|c| format!("{heading}\n{c}")).collect()
 }
 
 /// Split text into chunks (stage 4), resolving `auto` to a concrete strategy first.
@@ -2164,7 +2183,7 @@ pub async fn admin_ingest_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{cookie_attributes, extract_page};
+    use super::{cookie_attributes, extract_page, with_heading_path};
 
     #[test]
     fn cookie_is_secure_except_on_local_http() {
@@ -2198,5 +2217,40 @@ mod tests {
         assert!(page.text.contains("Tabel D.1"));
         assert_eq!(page.tables.len(), 1);
         assert_eq!(page.tables[0].rows.len(), 40);
+    }
+
+    /// Prints the text chunks of a saved guidebook page as URL ingest would make them
+    /// (sections → acronyms → auto strategy → heading path). Run with:
+    /// `cargo test show_guidebook_chunks -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints example output; run explicitly"]
+    fn show_guidebook_chunks() {
+        use crate::models::ChunkStrategy;
+        let html = include_str!("../tests/fixtures/introduction.html");
+        let page = extract_page(html, "https://mtiugm.github.io/panduan_pmpsti/chapter1/introduction.html", None);
+        let (min, max) = (super::chunk_min_chars(), super::chunk_max_chars());
+        let mut n = 0;
+        for section in &page.sections {
+            let text = crate::enrich::expand_acronyms(&section.text, 2);
+            let chunks = match ChunkStrategy::detect(&text) {
+                ChunkStrategy::Structural => super::structural_chunk(&text, min, max),
+                _ => super::sentence_chunk(&text, min, max),
+            };
+            for c in with_heading_path(&section.path, chunks) {
+                n += 1;
+                if n <= 6 {
+                    println!("--- chunk {n} ({} chars)\n{}\n", c.len(), c.chars().take(300).collect::<String>());
+                }
+            }
+        }
+        println!("{} text chunks from {} sections (+ table chunks)", n, page.sections.len());
+    }
+
+    #[test]
+    fn chunks_start_with_heading_path() {
+        let path = vec!["1 Pendahuluan".to_string(), "1.1 Identitas Prodi".to_string()];
+        let chunks = with_heading_path(&path, vec!["Nama ...".into(), "Visi ...".into()]);
+        assert_eq!(chunks, ["1 Pendahuluan > 1.1 Identitas Prodi\nNama ...", "1 Pendahuluan > 1.1 Identitas Prodi\nVisi ..."]);
+        assert_eq!(with_heading_path(&[], vec!["text".into()]), ["text"]);
     }
 }
