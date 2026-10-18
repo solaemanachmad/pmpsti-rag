@@ -259,6 +259,14 @@ drafts are not searchable until an admin approves them.
 
 ---
 
+### Unanswered questions
+
+Admin → **Unanswered** lists questions the documents could not answer (the model said the information is
+not in the documents), grouped by wording and counted, most asked first. Add a source that covers a question,
+test it in Chat, then **Mark handled**. Each answer is classified when it is logged (`query_logs.outcome`:
+`answered`, `not_found`, `no_sources`); guest questions are logged too. Questions logged before this feature
+have no outcome and do not appear.
+
 ## Code and database workflow
 
 There are **two separate flows**: one for **code** (Git, GitHub, Vercel) and one for **data** (Neon). Normal deployments only use the code flow.

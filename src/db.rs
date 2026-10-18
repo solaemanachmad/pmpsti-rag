@@ -23,6 +23,19 @@ pub struct SearchResult {
     pub pages:        Vec<i32>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UnansweredQuestion {
+    /// Most recent wording
+    pub query:       String,
+    pub times:       i64,
+    /// How many of those got "not in the documents" (the rest had no sources at all)
+    pub not_found:   i64,
+    pub last_asked:  String,
+    pub first_asked: String,
+    /// query_logs rows behind this question (to mark them handled)
+    pub ids:         Vec<i64>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct User {
     pub id:             i64,
@@ -314,6 +327,11 @@ impl Database {
             // Query logs
             "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS user_id BIGINT",
             "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS detected_domain TEXT DEFAULT ''",
+            // Outcome of the answer: answered | not_found | no_sources ('' = logged before this existed)
+            "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT ''",
+            // Set when an admin marks an unanswered question as handled
+            "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ",
+            "CREATE INDEX IF NOT EXISTS query_logs_outcome_idx ON query_logs(outcome, created_at DESC)",
             // Documents — safe migration untuk DB yang sudah ada
             "ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
             "ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
@@ -674,12 +692,13 @@ impl Database {
         search_time_ms:    i64,
         session_id:        Option<&str>,
         user_id:           Option<i64>,
+        outcome:           &str,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO query_logs
                 (query_text, detected_language, detected_domain,
-                 num_results, top_score, search_time_ms, session_id, user_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                 num_results, top_score, search_time_ms, session_id, user_id, outcome)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(query_text)
         .bind(detected_language)
@@ -689,9 +708,52 @@ impl Database {
         .bind(search_time_ms)
         .bind(session_id)
         .bind(user_id)
+        .bind(outcome)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Questions the assistant could not answer, grouped by wording (case, spaces and
+    /// trailing punctuation ignored), most asked first. Handled ones are left out.
+    pub async fn unanswered_questions(&self, days: i64, include_no_sources: bool) -> Result<Vec<UnansweredQuestion>> {
+        let rows = sqlx::query(
+            "SELECT btrim(regexp_replace(regexp_replace(lower(query_text), '[\\s?!.]+$', ''), '\\s+', ' ', 'g')) AS key,
+                    (array_agg(query_text ORDER BY created_at DESC))[1] AS query,
+                    COUNT(*) AS times,
+                    COUNT(*) FILTER (WHERE outcome = 'not_found') AS not_found,
+                    MAX(created_at)::text AS last_asked,
+                    MIN(created_at)::text AS first_asked,
+                    array_agg(id ORDER BY id) AS ids
+             FROM query_logs
+             WHERE resolved_at IS NULL
+               AND created_at >= NOW() - ($1::bigint * INTERVAL '1 day')
+               AND (outcome = 'not_found' OR ($2 AND outcome = 'no_sources'))
+             GROUP BY key
+             ORDER BY times DESC, last_asked DESC
+             LIMIT 200",
+        )
+        .bind(days)
+        .bind(include_no_sources)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(|r| UnansweredQuestion {
+            query:       r.get("query"),
+            times:       r.get("times"),
+            not_found:   r.get("not_found"),
+            last_asked:  r.get("last_asked"),
+            first_asked: r.get("first_asked"),
+            ids:         r.get("ids"),
+        }).collect())
+    }
+
+    /// Mark logged questions as handled (a source was added, or the question is out of scope).
+    pub async fn resolve_questions(&self, ids: &[i64]) -> Result<u64> {
+        let res = sqlx::query("UPDATE query_logs SET resolved_at = NOW() WHERE id = ANY($1) AND resolved_at IS NULL")
+            .bind(ids)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
     }
 
     pub async fn get_query_log_stats(&self) -> Result<QueryLogStats> {
@@ -2024,6 +2086,8 @@ pub struct AdminQueryLog {
     pub user_id:         Option<i64>,
     pub session_id:      Option<String>,
     pub created_at:      String,
+    /// answered | not_found | no_sources ('' before outcomes were logged)
+    pub outcome:         String,
 }
 
 impl Database {
@@ -2037,7 +2101,7 @@ impl Database {
 
         let rows = sqlx::query(
             "SELECT id, query_text, detected_language, num_results, search_time_ms,
-                    user_id, session_id, created_at::text
+                    user_id, session_id, created_at::text, outcome
              FROM query_logs
              ORDER BY created_at DESC
              LIMIT $1 OFFSET $2"
@@ -2055,6 +2119,7 @@ impl Database {
             user_id:          r.try_get("user_id").ok(),
             session_id:       r.try_get("session_id").ok(),
             created_at:       r.get("created_at"),
+            outcome:          r.get("outcome"),
         }).collect();
 
         Ok((logs, total))

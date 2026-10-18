@@ -1032,6 +1032,7 @@ pub async fn ask(
         elapsed_ms as i64,
         Some(&session_id),
         Some(uid),
+        answer_outcome(&answer, relevant.len()),
     ).await;
 
     // Build sources
@@ -1131,6 +1132,13 @@ pub async fn ask_public(
 
     // Increment setelah berhasil menjawab
     let new_count = state.db.guest_increment(&guest_token).await;
+
+    // Log guest questions too (no user, no session) so unanswered ones show up for the admin
+    let top_score = all_chunks.first().map(|c| c.score as f32).unwrap_or(0.0);
+    let _ = state.db.log_query(
+        &body.query, "id", "", relevant.len() as i32, top_score, elapsed_ms as i64,
+        None, None, answer_outcome(&answer, relevant.len()),
+    ).await;
 
     let sources: Vec<SourceRef> = relevant.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
@@ -1641,6 +1649,28 @@ pub async fn admin_update_document(
     }
 }
 
+/// Phrases the model uses when the documents do not cover a question (system prompt rule 2).
+const NOT_FOUND_PHRASES: &[&str] = &[
+    "tidak tersedia dalam dokumen", "tidak tersedia di dokumen", "tidak terdapat dalam dokumen",
+    "tidak ditemukan dalam dokumen", "tidak ditemukan di dokumen", "tidak ada dalam dokumen",
+    "tidak ada informasi", "belum tersedia dalam dokumen", "tidak tercantum dalam dokumen",
+    "informasi tersebut tidak tersedia", "tidak dapat menemukan informasi",
+    "not available in the indexed documents", "not found in the documents", "no information about",
+];
+
+/// How a question went: "not_found" (the model said the documents do not cover it),
+/// "no_sources" (nothing relevant was found; greetings land here too) or "answered".
+pub(crate) fn answer_outcome(answer: &str, n_sources: usize) -> &'static str {
+    let lower = answer.to_lowercase();
+    if NOT_FOUND_PHRASES.iter().any(|p| lower.contains(p)) {
+        "not_found"
+    } else if n_sources == 0 {
+        "no_sources"
+    } else {
+        "answered"
+    }
+}
+
 /// Bersihkan judul sumber referensi untuk tampilan di frontend.
 /// Prioritaskan subcategory (misal "1.2 Latar Belakang") daripada path title
 /// (misal "chapter1/introduction"). Jika subcategory kosong, ambil bagian terakhir
@@ -1829,6 +1859,41 @@ pub async fn admin_query_logs(req: HttpRequest, state: web::Data<AppState>) -> H
             "limit": limit,
             "offset": offset,
         }))),
+        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, format!("{e}"))),
+    }
+}
+
+/// GET /api/admin/unanswered?days=30&include_no_sources=false
+/// Questions the documents could not answer, grouped and counted — a to-do list for new sources.
+pub async fn admin_unanswered(req: HttpRequest, state: web::Data<AppState>) -> HttpResponse {
+    let claims = match require_auth(&req, &state.jwt_secret) { Ok(c) => c, Err(r) => return r };
+    if claims.role != "admin" {
+        return HttpResponse::Forbidden().json(ApiError::new(403, "Hanya admin"));
+    }
+    let query = web::Query::<std::collections::HashMap<String, String>>::from_query(req.query_string())
+        .unwrap_or_else(|_| web::Query(std::collections::HashMap::new()));
+    let days: i64 = query.get("days").and_then(|v| v.parse().ok()).unwrap_or(30).clamp(1, 365);
+    let no_sources = query.get("include_no_sources").map(|v| v == "true").unwrap_or(false);
+    match state.db.unanswered_questions(days, no_sources).await {
+        Ok(rows) => HttpResponse::Ok().json(ApiSuccess::new(rows)),
+        Err(e)   => HttpResponse::InternalServerError().json(ApiError::new(500, format!("{e}"))),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ResolveBody { pub ids: Vec<i64> }
+
+/// POST /api/admin/unanswered/resolve {"ids":[…]} — mark questions as handled.
+pub async fn admin_resolve_unanswered(req: HttpRequest, state: web::Data<AppState>, body: web::Json<ResolveBody>) -> HttpResponse {
+    let claims = match require_auth(&req, &state.jwt_secret) { Ok(c) => c, Err(r) => return r };
+    if claims.role != "admin" {
+        return HttpResponse::Forbidden().json(ApiError::new(403, "Hanya admin"));
+    }
+    if body.ids.is_empty() || body.ids.len() > 1000 {
+        return HttpResponse::BadRequest().json(ApiError::new(400, "ids: 1–1000 items"));
+    }
+    match state.db.resolve_questions(&body.ids).await {
+        Ok(n)  => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "resolved": n }))),
         Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, format!("{e}"))),
     }
 }
@@ -2412,5 +2477,18 @@ mod tests {
         let chunks = with_heading_path(&path, vec!["Nama ...".into(), "Visi ...".into()]);
         assert_eq!(chunks, ["1 Pendahuluan > 1.1 Identitas Prodi\nNama ...", "1 Pendahuluan > 1.1 Identitas Prodi\nVisi ..."]);
         assert_eq!(with_heading_path(&[], vec!["text".into()]), ["text"]);
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::answer_outcome;
+
+    #[test]
+    fn classifies_answers() {
+        assert_eq!(answer_outcome("Maaf, informasi tersebut tidak tersedia dalam dokumen yang diindeks.", 3), "not_found");
+        assert_eq!(answer_outcome("Halo! Saya asisten akademik PMPSTI.", 0), "no_sources");
+        assert_eq!(answer_outcome("Tesis bernilai **6 SKS** [1].", 2), "answered");
+        assert_eq!(answer_outcome("Tidak ada informasi mengenai beasiswa LPDP.", 0), "not_found");
     }
 }
