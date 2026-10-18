@@ -1734,7 +1734,7 @@ impl Database {
 
     pub async fn admin_list_chunks(&self, document_id: &str) -> Result<Vec<serde_json::Value>, String> {
         let rows = sqlx::query(
-            "SELECT id, chunk_index, content, title, category, subcategory, source_url, created_at::text
+            "SELECT id::bigint AS id, chunk_index, content, title, category, subcategory, source_url, created_at::text
              FROM documents WHERE document_id = $1 ORDER BY chunk_index ASC"
         )
         .bind(document_id)
@@ -1743,7 +1743,10 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         let chunks = rows.iter().map(|r| serde_json::json!({
-            "id":          r.get::<i32, _>("id"),
+            // id is SERIAL (int4) when the backend creates the table, but bigint on Neon (created
+            // by an export script); the query casts to bigint so both decode. A type mismatch in
+            // `get` panics, which dropped the connection (HTTP 500 when opening a document's chunks).
+            "id":          r.get::<i64, _>("id"),
             "chunk_index": r.get::<Option<i32>, _>("chunk_index").unwrap_or(0),
             "content":     r.get::<Option<String>, _>("content").unwrap_or_default(),
             "title":       r.get::<Option<String>, _>("title").unwrap_or_default(),
