@@ -573,10 +573,8 @@ async fn ask_user(req: &HttpRequest, state: &AppState) -> Result<i64, HttpRespon
     let Ok(Some((key_id, user_id, hash, _perms, rate_limit))) = state.db.lookup_api_key(&key[..12]).await else {
         return Err(invalid());
     };
-    if !verify_password(&key, &hash).unwrap_or(false) {
-        return Err(invalid());
-    }
-    // Per-key limit per minute (shares the in-memory map used for login attempts)
+    // Per-key limit per minute, counted before the (slow) hash check so wrong keys that share a
+    // real prefix are limited too. Shares the in-memory map used for login attempts.
     {
         let now = Instant::now();
         let mut e = state.login_attempts.entry(format!("apikey:{key_id}"))
@@ -590,6 +588,9 @@ async fn ask_user(req: &HttpRequest, state: &AppState) -> Result<i64, HttpRespon
                 429, &format!("Batas {rate_limit} permintaan per menit untuk API key ini tercapai"))));
         }
         e.count += 1;
+    }
+    if !verify_password(&key, &hash).unwrap_or(false) {
+        return Err(invalid());
     }
     let _ = state.db.touch_api_key(key_id).await;
     Ok(user_id)

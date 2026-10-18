@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use anyhow::Result;
-use chrono::Utc;
 use pgvector::Vector;
 use sqlx::{PgPool, Row};
 
@@ -1326,39 +1325,32 @@ impl Database {
         }).collect())
     }
 
-    /// Lookup berdasarkan prefix, kembalikan data untuk verifikasi hash.
+    /// Active, unexpired key with this prefix whose owner account is active.
     /// Returns: (key_id, user_id, key_hash, permissions_json, rate_limit)
     pub async fn lookup_api_key(
         &self,
         key_prefix: &str,
     ) -> Result<Option<(i64, i64, String, String, i32)>, String> {
+        // Expiry is checked in SQL: expires_at is TIMESTAMPTZ (reading it as text failed
+        // silently before, so expired keys were never rejected).
         let row = sqlx::query(
-            "SELECT id, user_id, key_hash, permissions::text, rate_limit, expires_at
-             FROM api_keys
-             WHERE key_prefix = $1 AND is_active = TRUE",
+            "SELECT k.id, k.user_id, k.key_hash, k.permissions::text AS permissions,
+                    COALESCE(k.rate_limit, 30) AS rate_limit
+             FROM api_keys k JOIN users u ON u.id = k.user_id
+             WHERE k.key_prefix = $1 AND k.is_active = TRUE
+               AND (k.expires_at IS NULL OR k.expires_at > NOW())
+               AND COALESCE(u.is_active, TRUE)",
         )
         .bind(key_prefix)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
 
-        let Some(r) = row else { return Ok(None) };
-
-        // Cek expiry
-        let expires: Option<String> = r.try_get("expires_at").ok().flatten();
-        if let Some(exp_str) = expires {
-            if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(&exp_str) {
-                if exp < Utc::now() {
-                    return Ok(None); // sudah expired
-                }
-            }
-        }
-
-        Ok(Some((
+        Ok(row.map(|r| (
             r.get("id"),
             r.get("user_id"),
             r.get("key_hash"),
-            r.get("permissions"),
+            r.get::<Option<String>, _>("permissions").unwrap_or_default(),
             r.get("rate_limit"),
         )))
     }
