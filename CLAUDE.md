@@ -26,6 +26,9 @@ This repository is **public**.
 - One PR = one concern. Follow the PR plan in `docs/design/ingest-from-links.md` §8.
 - Before opening a PR: `cargo check` + `cargo test`, `npm run check` if frontend changed, and the eval if
   retrieval, chunking, prompts or data can change.
+- After changing frontend dependencies (package.json / package-lock.json): `npm run build`, then
+  `npx vite preview` and open a few pages (/, /login, /chat, /admin) — they must return 200. `npm run check`
+  and the build do not catch server-side render errors (e.g. a package that needs Svelte 5 → every page 500).
 
 ## Database safety
 - **Never write to the production Neon branch** from scripts or tests. Use a Neon branch (`test-embedding` or a new one).
