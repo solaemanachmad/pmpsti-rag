@@ -56,6 +56,10 @@ jobs:
           SOURCE_ID: ${{ github.event.inputs.source_id }}
           FIGURES: ${{ github.event_name == 'schedule' || github.event.inputs.figures == 'true' }}
         run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$GEMINI_API_KEY" ] || [ -z "$GOOGLE_API_KEY" ]; then
+            echo "::warning::Skipping worker because required secrets are not configured (DATABASE_URL, GEMINI_API_KEY, GOOGLE_API_KEY)."
+            exit 0
+          fi
           args="--allow-production"
           if [ "${{ github.event_name }}" = "schedule" ]; then args="$args --recheck"; fi
           if [ -n "$SOURCE_ID" ]; then args="$args --source-id $SOURCE_ID"; fi
