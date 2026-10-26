@@ -1,7 +1,8 @@
 # PDF ingest worker — processes sources added in Admin → Sources (Google Drive / website PDFs)
 # and writes DRAFT chunks for admin review. See docs/design/ingest-from-links.md.
 #
-# Repository secrets (Settings → Secrets and variables → Actions):
+# Secrets of the GitHub environment "production" (Settings → Environments → production), or
+# repository secrets (Settings → Secrets and variables → Actions):
 #   DATABASE_URL    Neon connection string the backend uses (production)
 #   GEMINI_API_KEY  embeddings + figure descriptions
 #   GOOGLE_API_KEY  Google Cloud API key with the Drive API enabled (public files only)
@@ -30,10 +31,12 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    # Reads the secrets stored in the "production" environment (repository secrets work too)
+    environment: production
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
