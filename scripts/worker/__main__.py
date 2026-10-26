@@ -271,9 +271,13 @@ def main(argv: list[str] | None = None) -> int:
         return local_preview(args.file, figures=not args.no_figures)
 
     url = os.environ.get("DATABASE_URL", "")
-    if not url:
-        print("DATABASE_URL belum di-set", file=sys.stderr)
+    missing = [k for k in ("DATABASE_URL", "GEMINI_API_KEY") if not os.environ.get(k)]
+    if missing:
+        print(f"Secret belum di-set: {', '.join(missing)}. Di GitHub: Settings → Environments → production "
+              "(atau Settings → Secrets and variables → Actions → Repository secrets).", file=sys.stderr)
         return 2
+    if not os.environ.get("GOOGLE_API_KEY"):
+        print("Catatan: GOOGLE_API_KEY kosong — sumber Google Drive akan gagal; PDF dari website tetap diproses.")
     print(f"Database: {store.db_host(url)}")
     prod = os.environ.get("PROD_DATABASE_URL", "")
     if not args.allow_production:
