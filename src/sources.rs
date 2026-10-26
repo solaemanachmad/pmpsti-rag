@@ -235,6 +235,8 @@ pub struct DraftDocument {
     pub page_count:    i64,
     pub job_log:       Option<String>,
     pub replaces:      Vec<String>,   // active documents that approval will archive
+    /// Last "test questions" check (src/draft_check.rs), if run
+    pub check:         Option<crate::draft_check::CheckResult>,
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -572,6 +574,7 @@ pub async fn list_drafts(pool: &PgPool) -> Result<Vec<DraftDocument>, String> {
             }
         }
         let replaces = documents_replaced_by(pool, &document_id).await.unwrap_or_default();
+        let check = crate::draft_check::stored(pool, &document_id).await;
         out.push(DraftDocument {
             document_id,
             title: r.get("title"),
@@ -582,6 +585,7 @@ pub async fn list_drafts(pool: &PgPool) -> Result<Vec<DraftDocument>, String> {
             page_count: r.get("page_count"),
             job_log,
             replaces,
+            check,
         });
     }
     Ok(out)

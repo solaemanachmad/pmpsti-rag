@@ -238,6 +238,21 @@ impl RagEngine {
         (name.to_string(), self.llm.model.clone(), tail)
     }
 
+    /// A single instruction + text → reply, with the answer model and its fallbacks
+    /// (used for admin tools such as draft test questions, not for student answers).
+    pub async fn complete(&self, system: &str, user: &str, max_tokens: u32) -> Result<String> {
+        let messages = vec![
+            Message { role: "system".into(), content: system.to_string() },
+            Message { role: "user".into(), content: user.to_string() },
+        ];
+        let models = model_chain(&self.model());
+        match self.llm.provider {
+            LlmProvider::Gemini           => self.call_gemini_models(&models, system, &messages, max_tokens).await,
+            LlmProvider::OpenAICompatible => self.call_openai_models(&models, &messages, max_tokens).await,
+            LlmProvider::Ollama           => self.call_ollama_model(&self.model(), &messages).await,
+        }
+    }
+
     /// One tiny request to `model` (no fallback) to check the key and the model name.
     /// Costs one generation call.
     pub async fn test_model(&self, model: &str) -> Result<String> {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { admin } from '$lib/api/client';
+  import { admin, faq } from '$lib/api/client';
   import type {
     SourceRow, DraftDocument, DraftChunk, IngestJob, NewSourcePayload, ResolvedLink, SourceFile, SourceUpdatePayload
   } from '$lib/api/client';
@@ -14,7 +14,7 @@
   import CheckInterval from '$lib/components/admin/CheckInterval.svelte';
   import {
     Loader2, RefreshCw, Plus, Trash2, ExternalLink, FolderOpen, FileText, Globe, Check, X,
-    ChevronDown, Clock, AlertTriangle, CircleCheck, Image, Table2, FolderSync, Network, Search, ArrowLeft, Pencil
+    ChevronDown, Clock, AlertTriangle, CircleCheck, Image, Table2, FolderSync, Network, Search, ArrowLeft, Pencil, MessageCircleQuestion
   } from 'lucide-svelte';
 
   let sources: SourceRow[] = [];
@@ -266,6 +266,32 @@
     }
   }
 
+  // ── Test questions: does search find this draft for questions it answers? ──
+  let testing: Record<string, boolean> = {};
+  let testError: Record<string, string> = {};
+  let pinned: Record<string, boolean> = {};
+
+  async function runTest(d: DraftDocument) {
+    testing = { ...testing, [d.document_id]: true };
+    testError = { ...testError, [d.document_id]: '' };
+    try {
+      const check = await admin.testQuestions(d.document_id);
+      drafts = drafts.map(x => (x.document_id === d.document_id ? { ...x, check } : x));
+    } catch (e) {
+      testError = { ...testError, [d.document_id]: errorMessage(e) };
+    } finally {
+      testing = { ...testing, [d.document_id]: false };
+    }
+  }
+
+  async function addToFaq(question: string) {
+    try {
+      await faq.pin(question);
+      pinned = { ...pinned, [question]: true };
+      notice = 'Added to the suggested questions (Admin → FAQ).';
+    } catch (e) { error = errorMessage(e); }
+  }
+
   async function approve(d: DraftDocument) {
     const replaces = d.replaces.length ? `\n\nThis archives (replaces):\n• ${d.replaces.join('\n• ')}` : '';
     if (!confirm(`Approve "${d.title}"? It will be used in answers right away.${replaces}`)) return;
@@ -500,6 +526,8 @@
                         {#if d.figure_chunks}<span class="badge-neutral"><Image size={10} /> {d.figure_chunks}</span>{/if}
                         {#if d.replaces.length}<span class="badge-neutral">replaces {d.replaces.length}</span>{/if}
                         {#if warn.length}<span class="badge-warning"><AlertTriangle size={10} /> {warn.length} warnings</span>{/if}
+                        {#if d.check}<span class={d.check.found === d.check.questions.length ? 'badge-success' : 'badge-warning'} title="Test questions found by search">
+                          <MessageCircleQuestion size={10} /> {d.check.found}/{d.check.questions.length} found</span>{/if}
                       </span>
                       <span class="block text-xs text-muted-foreground mt-1 truncate">{d.citation_url}</span>
                     </span>
@@ -527,6 +555,44 @@
                         <ul class="list-disc pl-4 space-y-0.5">{#each warn as w}<li>{w}</li>{/each}</ul>
                       </Alert>
                     {/if}
+                    <div class="rounded-lg border p-3 space-y-2">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <p class="text-sm font-semibold flex-1 min-w-0">Test questions</p>
+                        <button class="btn-outline btn-sm" disabled={testing[d.document_id]} on:click={() => runTest(d)}>
+                          {#if testing[d.document_id]}<Loader2 size={13} class="animate-spin" />{:else}<MessageCircleQuestion size={13} />{/if}
+                          {d.check ? 'Run again' : 'Generate & check'}
+                        </button>
+                      </div>
+                      {#if !d.check && !testing[d.document_id]}
+                        <p class="text-xs text-muted-foreground">Writes {3} questions a student could ask whose answers are in this draft, then checks that search finds this draft for each one. Uses 1 Gemini request.</p>
+                      {/if}
+                      {#if testError[d.document_id]}<Alert>{testError[d.document_id]}</Alert>{/if}
+                      {#if d.check}
+                        <ul class="space-y-2">
+                          {#each d.check.questions as q}
+                            <li class="text-xs rounded-md bg-muted/40 p-2.5">
+                              <div class="flex items-start gap-2">
+                                <p class="font-semibold flex-1 min-w-0">{q.question}</p>
+                                {#if q.rank === 1}<span class="badge-success shrink-0">found #1</span>
+                                {:else if q.rank}<span class="badge-primary shrink-0">found #{q.rank}</span>
+                                {:else}<span class="badge-warning shrink-0">not in top 5</span>{/if}
+                              </div>
+                              <p class="text-muted-foreground mt-1">{q.answer}</p>
+                              {#if q.top_other}
+                                <p class="mt-1 text-warning">Search finds “{q.top_other}” first — if it says the same thing, it may be a duplicate or another version.</p>
+                              {/if}
+                              {#if !q.rank}
+                                <p class="mt-1 text-muted-foreground">Students asking this may not get this draft. Check that the chunks contain the key words, or fix the original page.</p>
+                              {/if}
+                              <button class="btn-ghost btn-sm -ml-2 mt-1" disabled={pinned[q.question]} on:click={() => addToFaq(q.question)}>
+                                {pinned[q.question] ? 'Added to suggested questions' : '+ Add to suggested questions'}
+                              </button>
+                            </li>
+                          {/each}
+                        </ul>
+                        <p class="text-[11px] text-muted-foreground">Checked {formatDateTime(d.check.checked_at)} · search by meaning among approved documents plus this draft.</p>
+                      {/if}
+                    </div>
                     {#if !draftChunks[d.document_id]}
                       <p class="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 size={14} class="animate-spin" /> Loading chunks…</p>
                     {:else}

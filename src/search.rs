@@ -52,7 +52,7 @@ impl SearchEngine {
         })
     }
 
-    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, anyhow::Error> {
+    pub(crate) async fn embed_query(&self, query: &str) -> Result<Vec<f32>, anyhow::Error> {
         let url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent";
         let body = EmbedRequest {
             content: EmbedContent {
