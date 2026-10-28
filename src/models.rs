@@ -72,6 +72,9 @@ pub struct AskRequest {
     pub category_filter: Option<String>,
     pub search_mode:     Option<String>,  // "hybrid" | "semantic" | "keyword"
     pub top_k:           Option<i64>,
+    /// true = stream the answer as NDJSON lines (chat UI); default: one JSON response
+    #[serde(default)]
+    pub stream:          Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

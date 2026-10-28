@@ -335,6 +335,50 @@ export interface DraftChunk {
 }
 
 // ── Streaming ask ──
+// The backend streams NDJSON (one JSON object per line): {"type":"delta","text"} while the
+// answer is written, then {"type":"done", answer, sources, …} or {"type":"error", error}.
+// A plain JSON reply (an older backend) is still understood.
+
+/** Read an answer response; calls onChunk per piece of text and returns the final payload. */
+async function readAnswer<T extends { answer: string }>(
+  res: Response,
+  onChunk: (text: string) => void,
+  isCancelled: () => boolean
+): Promise<T | null> {
+  if (!(res.headers.get('content-type') ?? '').includes('ndjson') || !res.body) {
+    const json = await res.json();
+    const data: T = json.data ?? json;
+    if (isCancelled()) return null;
+    onChunk(data.answer);
+    return data;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let done: T | null = null;
+  const handle = (line: string) => {
+    if (!line.trim()) return;
+    const msg = JSON.parse(line);
+    if (msg.type === 'delta') onChunk(msg.text);
+    else if (msg.type === 'done') done = msg as T;
+    else if (msg.type === 'error') throw new Error(msg.error || 'Failed to get an answer');
+  };
+  for (;;) {
+    const { value, done: end } = await reader.read();
+    if (isCancelled()) { reader.cancel().catch(() => {}); return null; }
+    buf += decoder.decode(value ?? new Uint8Array(), { stream: !end });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      handle(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+    }
+    if (end) break;
+  }
+  handle(buf);
+  if (!done) throw new Error('The answer was cut off. Please try again.');
+  return done;
+}
+
 export function askStream(
   query: string,
   session_id: string | undefined,
@@ -351,7 +395,7 @@ export function askStream(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ query, session_id, search_mode: 'hybrid', top_k: 5 }),
+        body: JSON.stringify({ query, session_id, search_mode: 'hybrid', top_k: 5, stream: true }),
         signal: ctrl.signal
       });
 
@@ -361,19 +405,11 @@ export function askStream(
         return;
       }
 
-      const json = await res.json();
-      const data: AskResponse = json.data ?? json;
-      if (cancelled) return;
-
-      const words = data.answer.split(' ');
-      for (let i = 0; i < words.length; i++) {
-        if (cancelled) return;
-        await new Promise(r => setTimeout(r, 25));
-        onChunk((i === 0 ? '' : ' ') + words[i]);
-      }
+      const data = await readAnswer<AskResponse>(res, onChunk, () => cancelled);
+      if (!data) return;
       onDone(data.sources ?? [], data.session_id ?? '', data.search_time_ms ?? 0);
     } catch (e: unknown) {
-      if (e instanceof Error && e.name !== 'AbortError' && !cancelled) onError(String(e));
+      if (e instanceof Error && e.name !== 'AbortError' && !cancelled) onError(e.message);
     }
   })();
 
@@ -631,7 +667,7 @@ export function askPublic(
           'Content-Type': 'application/json',
           'X-Guest-Token': guestToken
         },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, stream: true }),
         signal: ctrl.signal
       });
 
@@ -646,20 +682,12 @@ export function askPublic(
         return;
       }
 
-      const json = await res.json();
-      const data: GuestAskResponse = json.data ?? json;
-      if (cancelled) return;
-
-      const words = data.answer.split(' ');
-      for (let i = 0; i < words.length; i++) {
-        if (cancelled) return;
-        await new Promise(r => setTimeout(r, 25));
-        onChunk((i === 0 ? '' : ' ') + words[i]);
-      }
+      const data = await readAnswer<GuestAskResponse>(res, onChunk, () => cancelled);
+      if (!data) return;
 
       onDone(data);
     } catch (e: unknown) {
-      if (e instanceof Error && e.name !== 'AbortError' && !cancelled) onError(String(e));
+      if (e instanceof Error && e.name !== 'AbortError' && !cancelled) onError(e.message);
     }
   })();
 

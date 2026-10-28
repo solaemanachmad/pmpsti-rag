@@ -425,14 +425,11 @@ impl RagEngine {
     /// - List / Procedural: other chunks of the same document (original order), within budget
     /// - otherwise        : the ±1 neighbours of every matched chunk
     /// Matched chunks always come first — expansion can never push them out.
-    pub async fn build_context(&self, query: &str, hits: &[&SearchResult]) -> Vec<SearchResult> {
+    pub async fn build_context(&self, query_type: &QueryType, hits: &[&SearchResult]) -> Vec<SearchResult> {
         if hits.is_empty() {
             return vec![];
         }
-        let expand_whole_doc = matches!(
-            self.classify_query(query).await,
-            QueryType::List | QueryType::Procedural
-        );
+        let expand_whole_doc = matches!(query_type, QueryType::List | QueryType::Procedural);
         let budget_chars: usize = if expand_whole_doc { 14_000 } else { 8_000 };
 
         // Group per document, ordered by the rank of its best chunk
@@ -510,23 +507,55 @@ impl RagEngine {
 
     /// Panggil LLM dengan chunks yang sudah difilter oleh handler.
     /// chunks = apa yang akan ditampilkan sebagai kartu sumber → nomor [1]..[N] cocok.
-    /// Menerima slice of references (sesuai return type filter_sources).
+    /// `query_type` comes from one `classify_query` call per question (also used by `build_context`).
     pub async fn answer_with_chunks(
         &self,
-        query:   &str,
-        history: &[Message],
-        chunks:  &[&SearchResult],
+        query:      &str,
+        history:    &[Message],
+        chunks:     &[&SearchResult],
+        query_type: &QueryType,
     ) -> Result<String> {
         if chunks.is_empty() {
-            return Ok(
-                "Maaf, saya tidak menemukan informasi yang relevan dengan pertanyaan tersebut \
-                 dalam dokumen yang tersedia.".to_string()
-            );
+            return Ok(NO_CONTEXT_ANSWER.to_string());
         }
+        let (system_prompt, messages) = self.answer_messages(query, history, chunks, query_type);
+        let answer = match self.llm.provider {
+            LlmProvider::Ollama           => self.call_ollama(&messages).await?,
+            LlmProvider::Gemini           => self.call_gemini(&system_prompt, &messages).await?,
+            LlmProvider::OpenAICompatible => self.call_openai_compatible(&messages).await?,
+        };
+        Ok(answer)
+    }
 
+    /// Like `answer_with_chunks`, but sends the text to `tx` while it is generated
+    /// (Gemini streams; the other providers send the whole answer at once). Returns the full answer.
+    pub async fn answer_stream(
+        &self,
+        query:      &str,
+        history:    &[Message],
+        chunks:     &[&SearchResult],
+        query_type: &QueryType,
+        tx:         &tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<String> {
+        if !chunks.is_empty() && matches!(self.llm.provider, LlmProvider::Gemini) {
+            let (system_prompt, messages) = self.answer_messages(query, history, chunks, query_type);
+            return self.stream_gemini(&system_prompt, &messages, tx).await;
+        }
+        let answer = self.answer_with_chunks(query, history, chunks, query_type).await?;
+        let _ = tx.send(answer.clone());
+        Ok(answer)
+    }
+
+    /// System prompt and messages (history window + context + question) for an answer.
+    fn answer_messages(
+        &self,
+        query:      &str,
+        history:    &[Message],
+        chunks:     &[&SearchResult],
+        query_type: &QueryType,
+    ) -> (String, Vec<Message>) {
         // Format context dari references
         let context = SearchEngine::format_context_refs(chunks);
-        let query_type = self.classify_query(query).await;
         let system_prompt = build_system_prompt();
 
         // Hint format jawaban berdasarkan tipe query
@@ -571,13 +600,7 @@ impl RagEngine {
         messages.extend_from_slice(history_window);
         messages.push(Message { role: "user".to_string(), content: user_message });
 
-        let answer = match self.llm.provider {
-            LlmProvider::Ollama           => self.call_ollama(&messages).await?,
-            LlmProvider::Gemini           => self.call_gemini(&system_prompt, &messages).await?,
-            LlmProvider::OpenAICompatible => self.call_openai_compatible(&messages).await?,
-        };
-
-        Ok(answer)
+        (system_prompt, messages)
     }
 
     async fn call_ollama(&self, messages: &[Message]) -> Result<String> {
@@ -655,34 +678,49 @@ impl RagEngine {
         self.call_gemini_models(&model_chain(&self.model()), system_prompt, messages, max_tokens).await
     }
 
+    /// Stream an answer from Gemini (`streamGenerateContent`, SSE), trying the model chain
+    /// until one accepts the request. Text goes to `tx` as it arrives; returns the whole answer.
+    async fn stream_gemini(&self, system_prompt: &str, messages: &[Message], tx: &tokio::sync::mpsc::UnboundedSender<String>) -> Result<String> {
+        let req = gemini_request(system_prompt, messages, crate::settings::get().max_tokens)?;
+        let mut last_err = anyhow::anyhow!("no Gemini model configured");
+        for model in model_chain(&self.model()) {
+            let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse");
+            let mut resp = self.http.post(&url).header("x-goog-api-key", &self.llm.api_key).json(&req).send().await?;
+            let status = resp.status();
+            if !status.is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                if status.as_u16() == 429 { mark_exhausted(&model, &body); }
+                last_err = anyhow::anyhow!("Gemini API error {} ({}): {}", status, model, body);
+                if !try_next_model(status.as_u16()) { break; }
+                continue;
+            }
+            let mut full = String::new();
+            let mut buf: Vec<u8> = Vec::new();
+            let take_lines = |buf: &mut Vec<u8>, full: &mut String, last: bool| {
+                while let Some(pos) = buf.iter().position(|&b| b == b'\n').or(if last && !buf.is_empty() { Some(buf.len() - 1) } else { None }) {
+                    let line: Vec<u8> = buf.drain(..=pos).collect();
+                    if let Some(text) = sse_text(&String::from_utf8_lossy(&line)) {
+                        full.push_str(&text);
+                        let _ = tx.send(text);
+                    }
+                }
+            };
+            while let Some(chunk) = resp.chunk().await? {
+                buf.extend_from_slice(&chunk);
+                take_lines(&mut buf, &mut full, false);
+            }
+            take_lines(&mut buf, &mut full, true);
+            if full.trim().is_empty() {
+                return Err(anyhow::anyhow!("Gemini returned an empty answer ({model})"));
+            }
+            return Ok(full);
+        }
+        Err(last_err)
+    }
+
     /// Try `models` in order (next one on quota / overload / unknown model).
     async fn call_gemini_models(&self, models: &[String], system_prompt: &str, messages: &[Message], max_tokens: u32) -> Result<String> {
-        let temperature = crate::settings::get().temperature as f32;
-
-        // Konversi messages ke format Gemini — skip system (sudah di system_instruction)
-        let contents: Vec<GeminiContent> = messages
-            .iter()
-            .filter(|m| m.role != "system")
-            .map(|m| GeminiContent {
-                role:  if m.role == "assistant" { "model".to_string() } else { "user".to_string() },
-                parts: vec![GeminiPart { text: m.content.clone() }],
-            })
-            .collect();
-
-        if contents.is_empty() {
-            return Err(anyhow::anyhow!("No messages to send to Gemini"));
-        }
-
-        let req = GeminiRequest {
-            system_instruction: GeminiSystemInstruction {
-                parts: vec![GeminiPart { text: system_prompt.to_string() }],
-            },
-            contents,
-            generation_config: GeminiGenerationConfig {
-                max_output_tokens: max_tokens,
-                temperature,
-            },
-        };
+        let req = gemini_request(system_prompt, messages, max_tokens)?;
 
         let mut last_err = anyhow::anyhow!("no Gemini model configured");
         let mut ok = None;
@@ -710,6 +748,44 @@ impl RagEngine {
             .ok_or_else(|| anyhow::anyhow!("Gemini returned empty response"))
     }
 }
+
+/// Gemini request body: system instruction + conversation (system messages skipped).
+fn gemini_request(system_prompt: &str, messages: &[Message], max_tokens: u32) -> Result<GeminiRequest> {
+    let contents: Vec<GeminiContent> = messages
+        .iter()
+        .filter(|m| m.role != "system")
+        .map(|m| GeminiContent {
+            role:  if m.role == "assistant" { "model".to_string() } else { "user".to_string() },
+            parts: vec![GeminiPart { text: m.content.clone() }],
+        })
+        .collect();
+    if contents.is_empty() {
+        return Err(anyhow::anyhow!("No messages to send to Gemini"));
+    }
+    Ok(GeminiRequest {
+        system_instruction: GeminiSystemInstruction {
+            parts: vec![GeminiPart { text: system_prompt.to_string() }],
+        },
+        contents,
+        generation_config: GeminiGenerationConfig {
+            max_output_tokens: max_tokens,
+            temperature:       crate::settings::get().temperature as f32,
+        },
+    })
+}
+
+/// Text of one SSE line from `streamGenerateContent` ("data: {…}"); None for other lines.
+fn sse_text(line: &str) -> Option<String> {
+    let data = line.trim().strip_prefix("data:")?.trim();
+    let v: serde_json::Value = serde_json::from_str(data).ok()?;
+    let text: String = v["candidates"][0]["content"]["parts"].as_array()?
+        .iter().filter_map(|p| p["text"].as_str()).collect();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Answer when no document matched (no LLM call).
+pub const NO_CONTEXT_ANSWER: &str = "Maaf, saya tidak menemukan informasi yang relevan dengan pertanyaan tersebut \
+     dalam dokumen yang tersedia.";
 
 // ══════════════════════════════════════════════════════════════════
 //  PROMPT BUILDERS
@@ -758,6 +834,14 @@ fn build_user_message(query: &str, context: &str, clarification_hint: &str) -> S
 #[cfg(test)]
 mod model_chain_tests {
     use super::*;
+
+    #[test]
+    fn reads_text_from_stream_lines() {
+        let line = r#"data: {"candidates":[{"content":{"parts":[{"text":"Tesis "},{"text":"6 SKS"}],"role":"model"}}]}"#;
+        assert_eq!(sse_text(line).as_deref(), Some("Tesis 6 SKS"));
+        assert_eq!(sse_text(r#"data: {"candidates":[{"finishReason":"STOP"}]}"#), None);
+        assert_eq!(sse_text(""), None);
+    }
 
     #[test]
     fn fallbacks_follow_primary_and_cooling_models_go_last() {
