@@ -1035,6 +1035,10 @@ pub async fn ask(
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
+    // Show only the sources the answer cites, renumbered to match the text
+    let (answer, cited) = cited_sources(&answer, relevant.len());
+    let shown: Vec<&crate::db::SearchResult> = cited.iter().map(|&i| relevant[i]).collect();
+
     // Simpan ke session (gunakan relevant chunks saja)
     let now = Utc::now().to_rfc3339();
     session.messages.push(ChatMessage {
@@ -1047,7 +1051,7 @@ pub async fn ask(
         role:       "assistant".to_string(),
         content:    answer.clone(),
         created_at: now.clone(),
-        sources:    relevant.iter().map(|c| ChatSource {
+        sources:    shown.iter().map(|c| ChatSource {
             title:      clean_source_title(&c.title, &c.subcategory),
             snippet:    c.snippet.clone(),
             source_url: crate::sources::citation_link(&c.source_url, &c.pages),
@@ -1076,7 +1080,7 @@ pub async fn ask(
     ).await;
 
     // Build sources
-    let sources: Vec<SourceRef> = relevant.iter().map(|c| SourceRef {
+    let sources: Vec<SourceRef> = shown.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
         snippet:    c.snippet.clone(),
         source_url: crate::sources::citation_link(&c.source_url, &c.pages),
@@ -1171,6 +1175,10 @@ pub async fn ask_public(
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
+    // Show only the sources the answer cites, renumbered to match the text
+    let (answer, cited) = cited_sources(&answer, relevant.len());
+    let shown: Vec<&crate::db::SearchResult> = cited.iter().map(|&i| relevant[i]).collect();
+
     // Increment setelah berhasil menjawab
     let new_count = state.db.guest_increment(&guest_token).await;
 
@@ -1181,7 +1189,7 @@ pub async fn ask_public(
         None, None, answer_outcome(&answer, relevant.len()),
     ).await;
 
-    let sources: Vec<SourceRef> = relevant.iter().map(|c| SourceRef {
+    let sources: Vec<SourceRef> = shown.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
         snippet:    c.snippet.clone(),
         source_url: crate::sources::citation_link(&c.source_url, &c.pages),
@@ -1721,6 +1729,57 @@ pub(crate) fn answer_outcome(answer: &str, n_sources: usize) -> &'static str {
     } else {
         "answered"
     }
+}
+
+/// Keep only the sources the answer cites. Citations are renumbered 1..k in order of first
+/// use ("[3] … [1]" → "[1] … [2]"), so the list under the answer matches the numbers in it.
+/// Returns the rewritten answer and the 0-based indexes of the cited sources, in that order.
+/// An answer without citations (a greeting, "not in the documents") gets no sources;
+/// numbers outside 1..=n_sources are removed from the text.
+pub(crate) fn cited_sources(answer: &str, n_sources: usize) -> (String, Vec<usize>) {
+    let mut order: Vec<usize> = Vec::new(); // 0-based source index, by first citation
+    let mut out = String::with_capacity(answer.len());
+    let mut rest = answer;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(nums) = after.find(']').filter(|&close| close <= 24)
+            .and_then(|close| parse_citation(&after[..close]).map(|n| (n, close)))
+            .filter(|&(_, close)| !after[close + 1..].starts_with('(')) // a Markdown link, not a citation
+        else {
+            out.push('[');
+            rest = after;
+            continue;
+        };
+        let (nums, close) = nums;
+        for n in nums.into_iter().filter(|&n| n >= 1 && n <= n_sources) {
+            let pos = match order.iter().position(|&i| i == n - 1) {
+                Some(p) => p,
+                None => { order.push(n - 1); order.len() - 1 }
+            };
+            let mark = format!("[{}]", pos + 1);
+            if !out.ends_with(&mark) { out.push_str(&mark); }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    (out, order)
+}
+
+/// "1", "1, 3", "1;2", "2-4" → the numbers; None when it is not a citation.
+fn parse_citation(inner: &str) -> Option<Vec<usize>> {
+    let mut nums = Vec::new();
+    for part in inner.split([',', ';']) {
+        let part = part.trim();
+        let (a, b) = match part.split_once(['-', '–']) {
+            Some((a, b)) => (a.trim(), b.trim()),
+            None => (part, part),
+        };
+        let (a, b): (usize, usize) = (a.parse().ok()?, b.parse().ok()?);
+        if b < a || b - a > 10 { return None; }
+        nums.extend(a..=b);
+    }
+    (!nums.is_empty()).then_some(nums)
 }
 
 /// Bersihkan judul sumber referensi untuk tampilan di frontend.
@@ -2471,5 +2530,38 @@ mod outcome_tests {
         assert_eq!(answer_outcome("Halo! Saya asisten akademik PMPSTI.", 0), "no_sources");
         assert_eq!(answer_outcome("Tesis bernilai **6 SKS** [1].", 2), "answered");
         assert_eq!(answer_outcome("Tidak ada informasi mengenai beasiswa LPDP.", 0), "not_found");
+    }
+}
+
+#[cfg(test)]
+mod citation_tests {
+    use super::cited_sources;
+
+    #[test]
+    fn keeps_only_cited_sources_renumbered() {
+        let (text, keep) = cited_sources("Tesis 6 SKS [3]. Total 36 SKS [1][3].", 3);
+        assert_eq!(text, "Tesis 6 SKS [1]. Total 36 SKS [2][1].");
+        assert_eq!(keep, vec![2, 0]);
+    }
+
+    #[test]
+    fn lists_ranges_and_bad_numbers() {
+        let (text, keep) = cited_sources("A [1, 2]. B [2-3]. C [9].", 3);
+        assert_eq!(text, "A [1][2]. B [2][3]. C .");
+        assert_eq!(keep, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn no_citation_no_sources() {
+        let (text, keep) = cited_sources("Maaf, informasi tersebut tidak tersedia dalam dokumen.", 3);
+        assert_eq!(text, "Maaf, informasi tersebut tidak tersedia dalam dokumen.");
+        assert!(keep.is_empty());
+    }
+
+    #[test]
+    fn leaves_other_brackets_alone() {
+        let (text, keep) = cited_sources("Lihat [panduan](https://x.id) dan [2](https://y.id) [ ] [1a] [1].", 2);
+        assert_eq!(text, "Lihat [panduan](https://x.id) dan [2](https://y.id) [ ] [1a] [1].");
+        assert_eq!(keep, vec![0]);
     }
 }
