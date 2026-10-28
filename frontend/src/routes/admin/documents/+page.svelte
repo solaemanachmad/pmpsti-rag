@@ -30,7 +30,29 @@
   let editVersion = ''; let editValidFrom = '';
   let savingDoc = false; let editError = '';
 
-  onMount(loadDocs);
+  // Source groups the admin opened or closed (kept in this browser only)
+  const OPEN_KEY = 'admin-docs-open-groups';
+  let openGroups: Record<string, boolean> = {};
+  onMount(() => {
+    try { openGroups = JSON.parse(localStorage.getItem(OPEN_KEY) || '{}'); } catch { openGroups = {}; }
+    loadDocs();
+  });
+  function saveOpen() {
+    try { localStorage.setItem(OPEN_KEY, JSON.stringify(openGroups)); } catch { /* storage unavailable */ }
+  }
+  /** Small groups and groups with drafts start open; a search or filter opens every match. */
+  function isOpen(g: DocGroup, openGroups: Record<string, boolean>, filtering: boolean): boolean {
+    if (filtering) return true;
+    return openGroups[g.key] ?? (g.docs.length <= 5 || reviewCount(g) > 0);
+  }
+  function toggleGroup(g: DocGroup) {
+    openGroups = { ...openGroups, [g.key]: !isOpen(g, openGroups, false) };
+    saveOpen();
+  }
+  function setAll(open: boolean) {
+    openGroups = Object.fromEntries(groups.map(g => [g.key, open]));
+    saveOpen();
+  }
 
   async function loadDocs() {
     loading = true; error = '';
@@ -114,9 +136,25 @@
     }
     g.docs.push(d);
     return acc;
-  }, []).sort((a, b) => (a.key === 'manual' ? 1 : b.key === 'manual' ? -1 : a.title.localeCompare(b.title)));
+  }, []).map(g => ({ ...g, docs: [...g.docs].sort(byStatus) })).sort((a, b) => (a.key === 'manual' ? 1 : b.key === 'manual' ? -1 : a.title.localeCompare(b.title)));
   $: q = search.trim().toLowerCase();
-  let showArchived = false;
+  /** '' = active and in review; 'all' adds archived */
+  let statusFilter: '' | 'active' | 'draft' | 'archived' | 'all' = '';
+  $: filtering = !!q || !!category || (statusFilter !== '' && statusFilter !== 'all');
+  const STATUS_ORDER: Record<string, number> = { draft: 0, active: 1, archived: 2 };
+  function byStatus(a: AdminDocument, b: AdminDocument): number {
+    return (STATUS_ORDER[a.status ?? 'active'] - STATUS_ORDER[b.status ?? 'active'])
+      || (a.title || a.document_id).localeCompare(b.title || b.document_id, 'id', { numeric: true });
+  }
+  function archivedIn(g: DocGroup): number {
+    return new Set(g.docs.filter(d => d.status === 'archived').map(d => d.source_url || d.document_id)).size;
+  }
+  /** the version most documents in the group carry, shown once on the group header */
+  function groupVersion(g: DocGroup): string {
+    const counts = new Map<string, number>();
+    for (const d of g.docs) if (d.status !== 'archived') { const v = versionOf(d); if (v) counts.set(v, (counts.get(v) ?? 0) + 1); }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+  }
   function reviewCount(g: DocGroup): number {
     return new Set(g.docs.filter(d => d.status === 'draft').map(d => d.source_url || d.document_id)).size;
   }
@@ -133,7 +171,9 @@
   }
   $: archivedCount = documents.filter(d => d.status === 'archived').length;
   $: filtered = documents.filter(d =>
-    (showArchived || d.status !== 'archived') &&
+    (statusFilter === 'all' ? true
+      : statusFilter === '' ? d.status !== 'archived'
+      : (d.status ?? 'active') === statusFilter) &&
     (!category || d.category === category) &&
     (!q || [d.title, d.source_url, d.category, d.subcategory].some(v => v?.toLowerCase().includes(q)))
   );
@@ -207,12 +247,21 @@
       <option value="">All categories</option>
       {#each categories as c}<option value={c}>{c}</option>{/each}
     </select>
-    {#if archivedCount}
-      <label class="flex items-center gap-2 text-sm text-muted-foreground shrink-0">
-        <input type="checkbox" bind:checked={showArchived} class="rounded border" /> Show archived ({archivedCount})
-      </label>
-    {/if}
+    <select bind:value={statusFilter} class="input sm:w-48" aria-label="Filter by status">
+      <option value="">Active + in review</option>
+      <option value="active">Active only</option>
+      <option value="draft">In review</option>
+      <option value="archived">Archived ({archivedCount})</option>
+      <option value="all">All</option>
+    </select>
   </div>
+
+  {#if groups.length > 1 && !filtering}
+    <div class="flex justify-end gap-3 -mt-1 text-xs">
+      <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(true)}>Expand all</button>
+      <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(false)}>Collapse all</button>
+    </div>
+  {/if}
 
   {#if loading && documents.length === 0}
     <LoadingState />
@@ -223,14 +272,26 @@
     </div>
   {:else}
     {#each groups as g (g.key)}
-    <section class="space-y-2" aria-label={g.title}>
-      <h2 class="flex items-center gap-2 text-sm font-semibold px-1 min-w-0">
-        <svelte:component this={g.kind === 'web_site' ? Network : g.key === 'manual' ? FileText : FolderSync} size={15} class="text-muted-foreground shrink-0" />
-        <span class="truncate">{g.title}</span>
-        <span class="text-xs font-normal text-muted-foreground shrink-0">· {liveCount(g)} {g.kind === 'web_site' ? (liveCount(g) === 1 ? 'page' : 'pages') : liveCount(g) === 1 ? 'document' : 'documents'}{reviewCount(g) ? ` live · ${reviewCount(g)} in review` : ''}</span>
-        {#if g.root}<a href={g.root} target="_blank" rel="noopener noreferrer" class="text-xs font-normal text-muted-foreground hover:text-primary truncate hidden sm:inline">{g.root}</a>{/if}
-      </h2>
-    <ul class="card divide-y overflow-hidden">
+    {@const gOpen = isOpen(g, openGroups, filtering)}
+    {@const gVersion = groupVersion(g)}
+    <section class="card overflow-hidden" aria-label={g.title}>
+      <div class="flex items-center gap-2 px-4 py-3 min-w-0 {gOpen ? 'border-b' : ''}">
+        <button type="button" on:click={() => toggleGroup(g)} aria-expanded={gOpen}
+          class="flex-1 min-w-0 flex items-center gap-2 text-left">
+          <ChevronDown size={16} class="shrink-0 text-muted-foreground transition-transform {gOpen ? '' : '-rotate-90'}" />
+          <svelte:component this={g.kind === 'web_site' ? Network : g.key === 'manual' ? FileText : FolderSync} size={15} class="text-muted-foreground shrink-0" />
+          <span class="text-sm font-semibold truncate">{g.title}</span>
+          <span class="flex flex-wrap items-center gap-1.5 shrink-0">
+            <span class="badge-neutral">{liveCount(g)} {g.kind === 'web_site' ? (liveCount(g) === 1 ? 'page' : 'pages') : liveCount(g) === 1 ? 'document' : 'documents'}</span>
+            {#if reviewCount(g)}<span class="badge-primary">{reviewCount(g)} in review</span>{/if}
+            {#if archivedIn(g)}<span class="badge-neutral hidden sm:inline-flex">{archivedIn(g)} archived</span>{/if}
+            {#if gVersion}<span class="badge-neutral hidden md:inline-flex" title="Version used when sources disagree">{gVersion}</span>{/if}
+          </span>
+        </button>
+        {#if g.root}<a href={g.root} target="_blank" rel="noopener noreferrer" class="icon-btn hidden sm:inline-flex shrink-0" title={g.root} aria-label="Open source site"><ExternalLink size={15} /></a>{/if}
+      </div>
+    {#if gOpen}
+    <ul class="divide-y" transition:slide={{ duration: 150 }}>
       {#each g.docs as doc (doc.document_id)}
         {@const open = expandedDoc === doc.document_id}
         <li>
@@ -245,7 +306,7 @@
                 <span class="flex flex-wrap items-center gap-1.5 mt-1.5">
                   {#if doc.category}<span class="badge-primary">{doc.category}{doc.subcategory ? ` / ${doc.subcategory}` : ''}</span>{/if}
                   <span class="badge-neutral"><Layers size={10} /> {doc.chunk_count ?? 0} chunks</span>
-                  {#if versionOf(doc)}<span class="badge-neutral" title="Version used when sources disagree">{versionOf(doc)}</span>{/if}
+                  {#if versionOf(doc) && versionOf(doc) !== gVersion}<span class="badge-neutral" title="Version used when sources disagree">{versionOf(doc)}</span>{/if}
                   {#if doc.status === 'archived'}<span class="badge-neutral" title="Replaced by a newer version; not searchable">archived</span>{/if}
                   {#if doc.status === 'draft'}<a href="/admin/sources" class="badge-primary" title="Waiting for review in Sources">draft · review</a>{/if}
                   {#if doc.source_url}<span class="text-xs text-muted-foreground truncate max-w-[16rem]">{hostname(doc.source_url) || doc.source_url}</span>{/if}
@@ -285,6 +346,7 @@
         </li>
       {/each}
     </ul>
+    {/if}
     </section>
     {/each}
   {/if}
