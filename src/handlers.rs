@@ -977,7 +977,7 @@ pub async fn ask(
 
     // Ambil atau buat session
     let session_id = body.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-    let mut session = state.db
+    let session = state.db
         .get_session(&session_id, uid)
         .await
         .ok()
@@ -996,91 +996,113 @@ pub async fn ask(
         crate::rag::Message { role: m.role.clone(), content: m.content.clone() }
     }).collect();
 
-    // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
-    let search_mode = body.search_mode.as_deref().unwrap_or("hybrid");
-    let tuning      = crate::settings::get(); // Admin → Settings
-    let top_k       = body.top_k.unwrap_or(tuning.candidates); // fetch more, filter in filter_sources
-    let cat_filter  = body.category_filter.as_deref();
-
-    let start = std::time::Instant::now();
-
-    // 1. Cari & expand dokumen
-    let all_chunks = match state.rag.search_chunks(
-        &body.query,
-        cat_filter,
-        search_mode,
-        top_k,
+    let tuning = crate::settings::get(); // Admin → Settings
+    let start = Instant::now();
+    let found = match retrieve(
+        &state, &body.query, body.category_filter.as_deref(), body.search_mode.as_deref(),
+        body.top_k.unwrap_or(tuning.candidates), tuning.max_sources,
     ).await {
-        Ok(r)  => r,
-        Err(e) => return HttpResponse::InternalServerError()
-            .json(ApiError::new(500, format!("Gagal mencari dokumen: {}", e))),
+        Ok(f) => f,
+        Err(r) => return r,
     };
 
-    // 2. Filter → merge per document + add surrounding context.
-    //    One entry = one source card = number [n] in the answer.
-    let hits     = filter_sources(&all_chunks, &body.query, tuning.min_score, 0.25, tuning.max_sources);
-    let contexts = state.rag.build_context(&body.query, &hits).await;
-    let relevant: Vec<&crate::db::SearchResult> = contexts.iter().collect();
+    // After the answer: save the turn to the session and log the question
+    let finish = {
+        let state = state.clone();
+        let query = body.query.clone();
+        let category = body.category_filter.clone().unwrap_or_default();
+        let session_id = session_id.clone();
+        move |answer: String, shown: Vec<crate::db::SearchResult>, n_contexts: usize, top_score: f32| async move {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let mut session = session;
+            let now = Utc::now().to_rfc3339();
+            session.messages.push(ChatMessage {
+                role: "user".to_string(), content: query.clone(), created_at: now.clone(), sources: vec![],
+            });
+            session.messages.push(ChatMessage {
+                role:       "assistant".to_string(),
+                content:    answer.clone(),
+                created_at: now.clone(),
+                sources:    shown.iter().map(|c| ChatSource {
+                    title:      clean_source_title(&c.title, &c.subcategory),
+                    snippet:    c.snippet.clone(),
+                    source_url: crate::sources::citation_link(&c.source_url, &c.pages),
+                    category:   c.category.clone(),
+                    subcategory: c.subcategory.clone(),
+                    score:      c.score,
+                    pages:      c.pages.clone(),
+                }).collect(),
+            });
+            session.updated_at = now;
+            let _ = state.db.save_session(&session).await;
+            let _ = state.db.log_query(
+                &query, "id", &category, n_contexts as i32, top_score, elapsed_ms as i64,
+                Some(&session_id), Some(uid), answer_outcome(&answer, n_contexts),
+            ).await;
+            serde_json::json!({ "session_id": session_id, "search_time_ms": elapsed_ms })
+        }
+    };
 
-    // 3. Call the LLM with exactly the same contexts as the source cards
-    let answer = match state.rag.answer_with_chunks(
-        &body.query,
-        &history,
-        &relevant,
-    ).await {
+    if body.stream.unwrap_or(false) {
+        return stream_answer(state, body.query.clone(), history, found, finish);
+    }
+
+    // Call the LLM with exactly the same contexts as the source cards
+    let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
+    let answer = match state.rag.answer_with_chunks(&body.query, &history, &refs, &found.query_type).await {
         Ok(r)  => r,
         Err(e) => return HttpResponse::InternalServerError()
             .json(ApiError::new(500, format!("Gagal mendapat jawaban: {}", e))),
     };
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
     // Show only the sources the answer cites, renumbered to match the text
-    let (answer, cited) = cited_sources(&answer, relevant.len());
-    let shown: Vec<&crate::db::SearchResult> = cited.iter().map(|&i| relevant[i]).collect();
+    let (answer, cited) = cited_sources(&answer, refs.len());
+    let shown: Vec<crate::db::SearchResult> = cited.iter().map(|&i| found.contexts[i].clone()).collect();
+    let sources = source_refs(&shown);
+    let meta = finish(answer.clone(), shown, refs.len(), found.top_score).await;
 
-    // Simpan ke session (gunakan relevant chunks saja)
-    let now = Utc::now().to_rfc3339();
-    session.messages.push(ChatMessage {
-        role:       "user".to_string(),
-        content:    body.query.clone(),
-        created_at: now.clone(),
-        sources:    vec![],
-    });
-    session.messages.push(ChatMessage {
-        role:       "assistant".to_string(),
-        content:    answer.clone(),
-        created_at: now.clone(),
-        sources:    shown.iter().map(|c| ChatSource {
-            title:      clean_source_title(&c.title, &c.subcategory),
-            snippet:    c.snippet.clone(),
-            source_url: crate::sources::citation_link(&c.source_url, &c.pages),
-            category:   c.category.clone(),
-            subcategory: c.subcategory.clone(),
-            score:      c.score,
-            pages:      c.pages.clone(),
-        }).collect(),
-    });
-    session.updated_at = now;
+    HttpResponse::Ok().json(ApiSuccess::new(AskResponse {
+        answer,
+        session_id,
+        sources,
+        search_time_ms: meta["search_time_ms"].as_u64().unwrap_or(0),
+    }))
+}
 
-    let _ = state.db.save_session(&session).await;
+/// Search results ready for the LLM: one context per document (= source [n]).
+pub(crate) struct Retrieved {
+    pub contexts:   Vec<crate::db::SearchResult>,
+    pub query_type: crate::rag::QueryType,
+    pub top_score:  f32,
+}
 
-    // Log query
+/// Search → filter → merge per document with surrounding context. The question type
+/// (one LLM call) is worked out at the same time as the search and used twice: for how much
+/// context to take and for the answer's format.
+async fn retrieve(
+    state:       &AppState,
+    query:       &str,
+    category:    Option<&str>,
+    search_mode: Option<&str>,
+    top_k:       i64,
+    max_sources: usize,
+) -> Result<Retrieved, HttpResponse> {
+    // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
+    let search_mode = search_mode.unwrap_or("hybrid");
+    let (all_chunks, query_type) = tokio::join!(
+        state.rag.search_chunks(query, category, search_mode, top_k),
+        state.rag.classify_query(query),
+    );
+    let all_chunks = all_chunks.map_err(|e| HttpResponse::InternalServerError()
+        .json(ApiError::new(500, format!("Gagal mencari dokumen: {}", e))))?;
+    let tuning = crate::settings::get();
+    let hits = filter_sources(&all_chunks, query, tuning.min_score, 0.25, max_sources);
+    let contexts = state.rag.build_context(&query_type, &hits).await;
     let top_score = all_chunks.first().map(|c| c.score as f32).unwrap_or(0.0);
-    let _ = state.db.log_query(
-        &body.query,
-        "id",
-        cat_filter.unwrap_or(""),
-        relevant.len() as i32,
-        top_score,
-        elapsed_ms as i64,
-        Some(&session_id),
-        Some(uid),
-        answer_outcome(&answer, relevant.len()),
-    ).await;
+    Ok(Retrieved { contexts, query_type, top_score })
+}
 
-    // Build sources
-    let sources: Vec<SourceRef> = shown.iter().map(|c| SourceRef {
+fn source_refs(shown: &[crate::db::SearchResult]) -> Vec<SourceRef> {
+    shown.iter().map(|c| SourceRef {
         title:      clean_source_title(&c.title, &c.subcategory),
         snippet:    c.snippet.clone(),
         source_url: crate::sources::citation_link(&c.source_url, &c.pages),
@@ -1088,14 +1110,85 @@ pub async fn ask(
         subcategory: c.subcategory.clone(),
         score:      c.score,
         pages:      c.pages.clone(),
-    }).collect();
+    }).collect()
+}
 
-    HttpResponse::Ok().json(ApiSuccess::new(AskResponse {
-        answer,
-        session_id,
-        sources,
-        search_time_ms: elapsed_ms,
-    }))
+/// Stream an answer as NDJSON, one JSON object per line:
+/// `{"type":"delta","text":…}` while the LLM writes (citations already renumbered), then
+/// `{"type":"done","answer":…,"sources":[…], …fields from finish}` or `{"type":"error","error":…}`.
+/// `finish(answer, cited contexts, number of contexts, top score)` saves/logs and returns extra
+/// fields for the done line.
+fn stream_answer<F, Fut>(
+    state:   web::Data<AppState>,
+    query:   String,
+    history: Vec<crate::rag::Message>,
+    found:   Retrieved,
+    finish:  F,
+) -> HttpResponse
+where
+    F: FnOnce(String, Vec<crate::db::SearchResult>, usize, f32) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = serde_json::Value> + Send + 'static,
+{
+    use tokio::io::AsyncWriteExt;
+    let (mut writer, reader) = tokio::io::duplex(16 * 1024);
+
+    actix_web::rt::spawn(async move {
+        let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut cites = CitationRenumber::new(refs.len());
+        let mut answer = String::new();
+
+        async fn line(w: &mut tokio::io::DuplexStream, v: serde_json::Value) {
+            let mut s = v.to_string();
+            s.push('\n');
+            let _ = w.write_all(s.as_bytes()).await; // the client may have gone; keep going
+            let _ = w.flush().await;
+        }
+
+        let generate = async {
+            let r = state.rag.answer_stream(&query, &history, &refs, &found.query_type, &tx).await;
+            drop(tx);
+            r
+        };
+        let forward = async {
+            while let Some(delta) = rx.recv().await {
+                let text = cites.push(&delta);
+                if !text.is_empty() {
+                    answer.push_str(&text);
+                    line(&mut writer, serde_json::json!({ "type": "delta", "text": text })).await;
+                }
+            }
+        };
+        let (result, ()) = tokio::join!(generate, forward);
+
+        let rest = cites.finish();
+        if !rest.is_empty() {
+            answer.push_str(&rest);
+            line(&mut writer, serde_json::json!({ "type": "delta", "text": rest })).await;
+        }
+        if let Err(e) = result {
+            log::warn!("[ask] streaming answer failed: {e}");
+            line(&mut writer, serde_json::json!({ "type": "error", "error": format!("Gagal mendapat jawaban: {e}") })).await;
+            return;
+        }
+
+        let shown: Vec<crate::db::SearchResult> = cites.order().iter().map(|&i| found.contexts[i].clone()).collect();
+        let sources = source_refs(&shown);
+        let mut done = finish(answer.clone(), shown, refs.len(), found.top_score).await;
+        if let Some(obj) = done.as_object_mut() {
+            obj.insert("type".into(), "done".into());
+            obj.insert("answer".into(), answer.into());
+            obj.insert("sources".into(), serde_json::to_value(sources).unwrap_or_default());
+        }
+        line(&mut writer, done).await;
+        let _ = writer.shutdown().await;
+    });
+
+    HttpResponse::Ok()
+        .content_type("application/x-ndjson; charset=utf-8")
+        .insert_header(("Cache-Control", "no-cache"))
+        .insert_header(("X-Accel-Buffering", "no"))
+        .streaming(tokio_util::io::ReaderStream::new(reader))
 }
 
 
@@ -1138,74 +1231,56 @@ pub async fn ask_public(
             .json(ApiError::new(400, "Query tidak boleh kosong"));
     }
 
-    // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
-    let search_mode = body.search_mode.as_deref().unwrap_or("hybrid");
-    let tuning      = crate::settings::get(); // Admin → Settings; guests: at most 5 candidates and sources
-    let top_k       = body.top_k.unwrap_or(tuning.candidates.min(5));
-
-    let start = std::time::Instant::now();
-
-    // 1. Cari & expand dokumen
-    let all_chunks = match state.rag.search_chunks(
-        &body.query,
-        None,
-        search_mode,
-        top_k,
+    let tuning = crate::settings::get(); // Admin → Settings; guests: at most 5 candidates and sources
+    let start = Instant::now();
+    let found = match retrieve(
+        &state, &body.query, None, body.search_mode.as_deref(),
+        body.top_k.unwrap_or(tuning.candidates.min(5)), tuning.max_sources.min(5),
     ).await {
-        Ok(r)  => r,
-        Err(e) => return HttpResponse::InternalServerError()
-            .json(ApiError::new(500, format!("Gagal mencari dokumen: {}", e))),
+        Ok(f) => f,
+        Err(r) => return r,
     };
 
-    // 2. Filter → merge per document + surrounding context (context number = card number)
-    let hits     = filter_sources(&all_chunks, &body.query, tuning.min_score, 0.25, tuning.max_sources.min(5));
-    let contexts = state.rag.build_context(&body.query, &hits).await;
-    let relevant: Vec<&crate::db::SearchResult> = contexts.iter().collect();
+    // After the answer: count the question and log it (no user, no session) so unanswered
+    // ones show up for the admin
+    let finish = {
+        let state = state.clone();
+        let query = body.query.clone();
+        move |answer: String, _shown: Vec<crate::db::SearchResult>, n_contexts: usize, top_score: f32| async move {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let new_count = state.db.guest_increment(&guest_token).await;
+            let _ = state.db.log_query(
+                &query, "id", "", n_contexts as i32, top_score, elapsed_ms as i64,
+                None, None, answer_outcome(&answer, n_contexts),
+            ).await;
+            serde_json::json!({
+                "search_time_ms": elapsed_ms,
+                "questions_used": new_count,
+                "questions_left": (GUEST_QUOTA - new_count).max(0),
+            })
+        }
+    };
 
-    // 3. LLM dengan filtered chunks
-    let answer = match state.rag.answer_with_chunks(
-        &body.query,
-        &[],    // no history for guests
-        &relevant,
-    ).await {
+    if body.stream.unwrap_or(false) {
+        return stream_answer(state, body.query.clone(), vec![], found, finish);
+    }
+
+    let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
+    let answer = match state.rag.answer_with_chunks(&body.query, &[], &refs, &found.query_type).await {
         Ok(r)  => r,
         Err(e) => return HttpResponse::InternalServerError()
             .json(ApiError::new(500, format!("Gagal mendapat jawaban: {}", e))),
     };
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
     // Show only the sources the answer cites, renumbered to match the text
-    let (answer, cited) = cited_sources(&answer, relevant.len());
-    let shown: Vec<&crate::db::SearchResult> = cited.iter().map(|&i| relevant[i]).collect();
-
-    // Increment setelah berhasil menjawab
-    let new_count = state.db.guest_increment(&guest_token).await;
-
-    // Log guest questions too (no user, no session) so unanswered ones show up for the admin
-    let top_score = all_chunks.first().map(|c| c.score as f32).unwrap_or(0.0);
-    let _ = state.db.log_query(
-        &body.query, "id", "", relevant.len() as i32, top_score, elapsed_ms as i64,
-        None, None, answer_outcome(&answer, relevant.len()),
-    ).await;
-
-    let sources: Vec<SourceRef> = shown.iter().map(|c| SourceRef {
-        title:      clean_source_title(&c.title, &c.subcategory),
-        snippet:    c.snippet.clone(),
-        source_url: crate::sources::citation_link(&c.source_url, &c.pages),
-        category:   c.category.clone(),
-        subcategory: c.subcategory.clone(),
-        score:      c.score,
-        pages:      c.pages.clone(),
-    }).collect();
-
-    HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({
-        "answer":          answer,
-        "sources":         sources,
-        "search_time_ms":  elapsed_ms,
-        "questions_used":  new_count,
-        "questions_left":  (GUEST_QUOTA - new_count).max(0),
-    })))
+    let (answer, cited) = cited_sources(&answer, refs.len());
+    let shown: Vec<crate::db::SearchResult> = cited.iter().map(|&i| found.contexts[i].clone()).collect();
+    let sources = source_refs(&shown);
+    let mut res = finish(answer.clone(), shown, refs.len(), found.top_score).await;
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("answer".into(), answer.into());
+        obj.insert("sources".into(), serde_json::to_value(sources).unwrap_or_default());
+    }
+    HttpResponse::Ok().json(ApiSuccess::new(res))
 }
 
 // ── Session management ──
@@ -1737,33 +1812,91 @@ pub(crate) fn answer_outcome(answer: &str, n_sources: usize) -> &'static str {
 /// An answer without citations (a greeting, "not in the documents") gets no sources;
 /// numbers outside 1..=n_sources are removed from the text.
 pub(crate) fn cited_sources(answer: &str, n_sources: usize) -> (String, Vec<usize>) {
-    let mut order: Vec<usize> = Vec::new(); // 0-based source index, by first citation
-    let mut out = String::with_capacity(answer.len());
-    let mut rest = answer;
-    while let Some(open) = rest.find('[') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let Some(nums) = after.find(']').filter(|&close| close <= 24)
-            .and_then(|close| parse_citation(&after[..close]).map(|n| (n, close)))
-            .filter(|&(_, close)| !after[close + 1..].starts_with('(')) // a Markdown link, not a citation
-        else {
-            out.push('[');
-            rest = after;
-            continue;
-        };
-        let (nums, close) = nums;
-        for n in nums.into_iter().filter(|&n| n >= 1 && n <= n_sources) {
-            let pos = match order.iter().position(|&i| i == n - 1) {
-                Some(p) => p,
-                None => { order.push(n - 1); order.len() - 1 }
-            };
-            let mark = format!("[{}]", pos + 1);
-            if !out.ends_with(&mark) { out.push_str(&mark); }
-        }
-        rest = &after[close + 1..];
+    let mut c = CitationRenumber::new(n_sources);
+    let mut out = c.push(answer);
+    out.push_str(&c.finish());
+    (out, c.order)
+}
+
+/// `cited_sources` for text that arrives in pieces: `push` returns what can be shown so far
+/// (holding back a possibly unfinished "[1" at the end), `finish` returns the rest.
+pub(crate) struct CitationRenumber {
+    n_sources: usize,
+    order:     Vec<usize>, // 0-based source index, by first citation
+    pending:   String,
+    out:       String,     // everything emitted, to avoid repeating "[1][1]"
+}
+
+impl CitationRenumber {
+    pub fn new(n_sources: usize) -> Self {
+        Self { n_sources, order: Vec::new(), pending: String::new(), out: String::new() }
     }
-    out.push_str(rest);
-    (out, order)
+
+    pub fn order(&self) -> &[usize] { &self.order }
+
+    pub fn push(&mut self, piece: &str) -> String {
+        self.pending.push_str(piece);
+        // Keep back a "[" whose citation may continue in the next piece
+        let keep_from = match self.pending.rfind('[') {
+            Some(open) => {
+                let tail = &self.pending[open..];
+                match tail.find(']') {
+                    None if tail.len() <= 25 => open,
+                    Some(close) if close + 1 == tail.len() => open, // "[2]" — is "(" next? (a link)
+                    _ => self.pending.len(),
+                }
+            }
+            None => self.pending.len(),
+        };
+        // ...with the space before it (or a trailing space: a citation may follow), which goes
+        // if the citation is dropped
+        let keep_from = if self.pending[..keep_from].ends_with(' ') {
+            keep_from - 1
+        } else {
+            keep_from
+        };
+        let ready: String = self.pending.drain(..keep_from).collect();
+        self.rewrite(&ready)
+    }
+
+    pub fn finish(&mut self) -> String {
+        let rest = std::mem::take(&mut self.pending);
+        self.rewrite(&rest)
+    }
+
+    fn rewrite(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find('[') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            let Some((nums, close)) = after.find(']').filter(|&close| close <= 24)
+                .and_then(|close| parse_citation(&after[..close]).map(|n| (n, close)))
+                .filter(|&(_, close)| !after[close + 1..].starts_with('(')) // a Markdown link, not a citation
+            else {
+                out.push('[');
+                rest = after;
+                continue;
+            };
+            let before = out.len();
+            for n in nums.into_iter().filter(|&n| n >= 1 && n <= self.n_sources) {
+                let pos = match self.order.iter().position(|&i| i == n - 1) {
+                    Some(p) => p,
+                    None => { self.order.push(n - 1); self.order.len() - 1 }
+                };
+                let mark = format!("[{}]", pos + 1);
+                let repeated = if out.is_empty() { self.out.ends_with(&mark) } else { out.ends_with(&mark) };
+                if !repeated { out.push_str(&mark); }
+            }
+            if out.len() == before && out.ends_with(' ') {
+                out.pop(); // the whole citation was dropped: no "word ." left behind
+            }
+            rest = &after[close + 1..];
+        }
+        out.push_str(rest);
+        self.out.push_str(&out);
+        out
+    }
 }
 
 /// "1", "1, 3", "1;2", "2-4" → the numbers; None when it is not a citation.
@@ -2547,7 +2680,7 @@ mod citation_tests {
     #[test]
     fn lists_ranges_and_bad_numbers() {
         let (text, keep) = cited_sources("A [1, 2]. B [2-3]. C [9].", 3);
-        assert_eq!(text, "A [1][2]. B [2][3]. C .");
+        assert_eq!(text, "A [1][2]. B [2][3]. C.");
         assert_eq!(keep, vec![0, 1, 2]);
     }
 
@@ -2556,6 +2689,23 @@ mod citation_tests {
         let (text, keep) = cited_sources("Maaf, informasi tersebut tidak tersedia dalam dokumen.", 3);
         assert_eq!(text, "Maaf, informasi tersebut tidak tersedia dalam dokumen.");
         assert!(keep.is_empty());
+    }
+
+    #[test]
+    fn streaming_pieces_give_the_same_text() {
+        let full = "Tesis 6 SKS [3]. Total [1, 3] dan [panduan](https://x.id) [2](https://y.id). Lain [9].";
+        let (whole, order) = super::cited_sources(full, 3);
+        for size in [1, 2, 3, 5, 7] {
+            let mut c = super::CitationRenumber::new(3);
+            let chars: Vec<char> = full.chars().collect();
+            let mut out = String::new();
+            for piece in chars.chunks(size) {
+                out.push_str(&c.push(&piece.iter().collect::<String>()));
+            }
+            out.push_str(&c.finish());
+            assert_eq!(out, whole, "piece size {size}");
+            assert_eq!(c.order(), order.as_slice());
+        }
     }
 
     #[test]
