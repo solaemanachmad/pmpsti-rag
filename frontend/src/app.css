@@ -152,6 +152,18 @@
     font-weight: 700;
     margin-left: 1px;
   }
+  sup.citation-ref [data-cite] {
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 2px 3px;
+  }
+  sup.citation-ref [data-cite]:hover,
+  sup.citation-ref [data-cite]:focus-visible {
+    background: hsl(var(--primary) / 0.12);
+    outline: none;
+  }
 }
 
 @layer components {
