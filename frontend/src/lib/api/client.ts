@@ -339,6 +339,65 @@ export interface DraftChunk {
 // answer is written, then {"type":"done", answer, sources, …} or {"type":"error", error}.
 // A plain JSON reply (an older backend) is still understood.
 
+/**
+ * Typing effect on top of the stream: text appears at a steady reading pace (about 120
+ * characters a second), whole words at a time, and faster when a lot of text is waiting so it
+ * never falls far behind the model. Everything shows at once for people who prefer reduced
+ * motion and in a hidden tab.
+ */
+function typewriter(emit: (text: string) => void, isCancelled: () => boolean) {
+  const PACE = 120;     // characters per second
+  const BACKLOG = 300;  // above this, catch up
+  let queue = '';
+  let frame = 0;
+  let last = 0;
+  let budget = 0;
+  let waiters: (() => void)[] = [];
+  const instant = () =>
+    typeof window === 'undefined' || document.hidden ||
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+  function settle() {
+    if (queue) return;
+    waiters.forEach(w => w());
+    waiters = [];
+  }
+  function tick(now: number) {
+    frame = 0;
+    if (isCancelled()) { queue = ''; return settle(); }
+    if (instant()) { emit(queue); queue = ''; return settle(); }
+    const dt = last ? Math.min(now - last, 100) : 16;
+    last = now;
+    const rate = queue.length > BACKLOG ? Math.max(PACE, queue.length * 1.5) : PACE;
+    budget += (rate * dt) / 1000;
+    let n = Math.floor(budget);
+    if (n > 0) {
+      // finish the word rather than cutting it in half
+      const space = queue.slice(n).search(/\s/);
+      if (space >= 0 && space < 15) n += space + 1;
+      else if (space < 0 && queue.length - n < 15) n = queue.length;
+      n = Math.min(n, queue.length);
+      budget -= n;
+      emit(queue.slice(0, n));
+      queue = queue.slice(n);
+    }
+    if (queue) frame = requestAnimationFrame(tick);
+    else { budget = 0; last = 0; settle(); }
+  }
+  return {
+    push(text: string) {
+      queue += text;
+      if (!frame) frame = requestAnimationFrame(tick);
+    },
+    /** resolves once everything pushed so far is shown */
+    drain(): Promise<void> {
+      if (!queue) return Promise.resolve();
+      if (instant()) { cancelAnimationFrame(frame); tick(performance.now()); return Promise.resolve(); }
+      return new Promise(resolve => waiters.push(resolve));
+    }
+  };
+}
+
 /** Read an answer response; calls onChunk per piece of text and returns the final payload. */
 async function readAnswer<T extends { answer: string }>(
   res: Response,
@@ -405,11 +464,16 @@ export function askStream(
         return;
       }
 
-      const data = await readAnswer<AskResponse>(res, onChunk, () => cancelled);
+      const typing = typewriter(onChunk, () => cancelled);
+      const data = await readAnswer<AskResponse>(res, typing.push, () => cancelled);
       if (!data) return;
+      await typing.drain();
+      if (cancelled) return;
       onDone(data.sources ?? [], data.session_id ?? '', data.search_time_ms ?? 0);
     } catch (e: unknown) {
-      if (e instanceof Error && e.name !== 'AbortError' && !cancelled) onError(e.message);
+      const stopped = cancelled;
+      cancelled = true; // also stops the typing effect
+      if (e instanceof Error && e.name !== 'AbortError' && !stopped) onError(e.message);
     }
   })();
 
@@ -682,12 +746,17 @@ export function askPublic(
         return;
       }
 
-      const data = await readAnswer<GuestAskResponse>(res, onChunk, () => cancelled);
+      const typing = typewriter(onChunk, () => cancelled);
+      const data = await readAnswer<GuestAskResponse>(res, typing.push, () => cancelled);
       if (!data) return;
+      await typing.drain();
+      if (cancelled) return;
 
       onDone(data);
     } catch (e: unknown) {
-      if (e instanceof Error && e.name !== 'AbortError' && !cancelled) onError(e.message);
+      const stopped = cancelled;
+      cancelled = true; // also stops the typing effect
+      if (e instanceof Error && e.name !== 'AbortError' && !stopped) onError(e.message);
     }
   })();
 
