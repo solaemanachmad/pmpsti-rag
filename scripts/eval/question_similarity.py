@@ -68,10 +68,14 @@ def embed_all(texts: list[str]) -> dict[str, list[float]]:
     if missing:
         print(f"Embedding {len(missing)} new texts (Gemini RETRIEVAL_QUERY)...")
         model = GeminiEmbeddings(task_type="RETRIEVAL_QUERY")
-        for t, v in zip(missing, model.embed(missing, "RETRIEVAL_QUERY")):
-            cache[key(t)] = v
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(json.dumps(cache))
+        step = 25  # saved after every step, so an interrupted run keeps what it already paid for
+        for i in range(0, len(missing), step):
+            part = missing[i:i + step]
+            print(f"  {i + len(part)}/{len(missing)}", flush=True)
+            for t, v in zip(part, model.embed(part, "RETRIEVAL_QUERY")):
+                cache[key(t)] = v
+            CACHE_FILE.write_text(json.dumps(cache))
     return {t: cache[key(t)] for t in texts}
 
 
