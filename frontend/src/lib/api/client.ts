@@ -148,6 +148,15 @@ export const admin = {
       `/admin/documents/${encodeURIComponent(document_id)}`,
       { method: 'PATCH', body: JSON.stringify(payload) }
     ),
+  /** Topic categories (two levels, parents first) and how many documents are uncategorized. */
+  categories: () =>
+    request<CategoryList>('/admin/categories'),
+  /** File a document under a category; null = uncategorized. */
+  setDocumentCategory: (document_id: string, category_id: number | null) =>
+    request<{ updated_chunks: number }>(
+      `/admin/documents/${encodeURIComponent(document_id)}/category`,
+      { method: 'PATCH', body: JSON.stringify({ category_id }) }
+    ),
 
   // Document ingest
   /** Read and chunk a URL like ingestUrl, but embed and save nothing. */
@@ -628,6 +637,24 @@ export interface AdminDocument {
   valid_from?: string | null;
   source_version?: string;
   source_valid_from?: string | null;
+  /** topic category (Admin → Documents); null = uncategorized */
+  category_id?: number | null;
+  /** "Akademik › Persuratan"; empty when uncategorized */
+  category_path?: string;
+}
+/** A topic category; parent_id null = top level. */
+export interface Category {
+  id: number;
+  parent_id: number | null;
+  name: string;
+  slug: string;
+  sort_order: number;
+  /** documents filed directly in this category (not its children), archived excluded */
+  document_count: number;
+}
+export interface CategoryList {
+  categories: Category[];
+  uncategorized: number;
 }
 export interface IngestResponse {
   document_id: string;
