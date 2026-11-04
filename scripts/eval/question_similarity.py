@@ -29,6 +29,7 @@ import hashlib
 import json
 import math
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -79,6 +80,20 @@ def embed_all(texts: list[str]) -> dict[str, list[float]]:
     return {t: cache[key(t)] for t in texts}
 
 
+def trigrams(t: str) -> set[str]:
+    """Letter trigrams per word, padded like pg_trgm — same as trigram_similarity in src/db.rs."""
+    out = set()
+    for w in re.findall(r"[0-9a-z]+", t.lower()):
+        w = f"  {w} "
+        out |= {w[i:i + 3] for i in range(len(w) - 2)}
+    return out
+
+
+def overlap(a: str, b: str) -> float:
+    x, y = trigrams(a), trigrams(b)
+    return len(x & y) / len(x | y) if x | y else 0.0
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     return dot / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
@@ -118,9 +133,29 @@ def main() -> None:
         print(f"  {t:.2f}        {ok:6.1%}          {bad:4d}  ({bad / len(diff):.2%})")
 
     # Highest threshold that still groups 95% of typos; then check it merges almost nothing else
-    good = [r for r in rows if r["typos_grouped"] >= 0.95]
-    suggestion = max(good, key=lambda r: r["threshold"])["threshold"] if good else None
-    print(f"\nSuggested SIMILAR_QUESTION_THRESHOLD: {suggestion if suggestion else 'none groups 95% of typos'}")
+    # The backend groups when BOTH hold: embedding ≥ SIMILAR_QUESTION_THRESHOLD and trigram
+    # overlap ≥ SIMILAR_QUESTION_MIN_OVERLAP. Grid of both:
+    same2 = [(q, v, s, overlap(q, v)) for q, v, s in same]
+    diff2 = [(a, b, s, overlap(a, b)) for a, b, s in diff]
+    print("\nembedding  + overlap   typos grouped   different questions merged")
+    grid = []
+    for t in [0.75, 0.78, 0.80, 0.82, 0.85, 0.88]:
+        for o in [0.35, 0.40, 0.45, 0.50]:
+            ok = sum(s >= t and x >= o for *_, s, x in same2) / len(same2)
+            bad = sum(s >= t and x >= o for *_, s, x in diff2)
+            grid.append({"threshold": t, "min_overlap": o, "typos_grouped": round(ok, 4), "different_merged": bad})
+            print(f"  {t:.2f}     {o:.2f}       {ok:6.1%}          {bad:4d}  ({bad / len(diff2):.2%})")
+    # most typos grouped while merging at most 0.2% of different pairs
+    fine = [g for g in grid if g["different_merged"] <= 0.002 * len(diff2)]
+    best = max(fine, key=lambda g: (g["typos_grouped"], g["threshold"])) if fine else None
+    suggestion = best and {"SIMILAR_QUESTION_THRESHOLD": best["threshold"], "SIMILAR_QUESTION_MIN_OVERLAP": best["min_overlap"]}
+    print(f"\nSuggested: {suggestion or 'no setting merges ≤ 0.2% of different questions'}"
+          + (f" — groups {best['typos_grouped']:.0%} of typos, merges {best['different_merged']} different pairs" if best else ""))
+    if best:
+        print("Different questions merged at that setting (check by hand; true duplicates are fine):")
+        for a, b, s, x in sorted(diff2, key=lambda d: -d[2]):
+            if s >= best["threshold"] and x >= best["min_overlap"]:
+                print(f"  emb {s:.3f}  overlap {x:.2f}  {a}  |  {b}")
 
     print("\nMost similar DIFFERENT questions (check by hand: true duplicates in the test sets are fine):")
     for a, b, s in sorted(diff, key=lambda x: -x[2])[:10]:
@@ -135,7 +170,7 @@ def main() -> None:
         out.write_text(json.dumps({
             "model": "gemini-embedding-001 / RETRIEVAL_QUERY / 768",
             "questions": len(questions), "typo_pairs": len(same), "different_pairs": len(diff),
-            "thresholds": rows, "suggested": suggestion,
+            "thresholds": rows, "grid": grid, "suggested": suggestion,
             "lowest_typo_pairs": [{"q": q, "variant": v, "sim": round(s, 4)} for q, v, s in sorted(same, key=lambda x: x[2])[:20]],
             "highest_different_pairs": [{"a": a, "b": b, "sim": round(s, 4)} for a, b, s in sorted(diff, key=lambda x: -x[2])[:20]],
         }, ensure_ascii=False, indent=1))
