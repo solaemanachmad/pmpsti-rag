@@ -188,7 +188,7 @@
             {#if quotaExceeded}
               <div class="card p-5 text-center">
                 <p class="font-bold">You’ve used today’s {GUEST_QUOTA} free questions</p>
-                <p class="text-sm text-muted-foreground mt-1">Create a free account with your <strong>@mail.ugm.ac.id</strong> email for unlimited questions and chat history.</p>
+                <p class="text-sm text-muted-foreground mt-1">Create a free account with your UGM email (<strong>@mail.ugm.ac.id</strong> or <strong>@ugm.ac.id</strong>) for unlimited questions and chat history.</p>
                 <div class="flex flex-col sm:flex-row gap-2 justify-center mt-4">
                   <a href="/register" class="btn-gold">Create free account</a>
                   <a href="/login" class="btn-outline">I already have an account</a>
@@ -276,7 +276,7 @@
           <div class="card p-4 flex flex-col sm:flex-row items-center gap-3 sm:justify-between text-center sm:text-left">
             <div>
               <p class="text-sm font-bold">Daily free limit reached</p>
-              <p class="text-xs text-muted-foreground">Sign up with your @mail.ugm.ac.id email for unlimited questions.</p>
+              <p class="text-xs text-muted-foreground">Sign up with your UGM email for unlimited questions.</p>
             </div>
             <div class="flex gap-2 shrink-0">
               <a href="/login" class="btn-outline h-9">Sign in</a>

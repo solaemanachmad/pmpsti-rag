@@ -17,8 +17,10 @@
       error = 'Email is required and the password must be at least 8 characters.';
       return;
     }
-    if (!email.toLowerCase().endsWith('@mail.ugm.ac.id')) {
-      error = 'Registration is only open to @mail.ugm.ac.id addresses.';
+    // students: @mail.ugm.ac.id; lecturers and staff: @ugm.ac.id (the backend checks the same)
+    const addr = email.trim().toLowerCase();
+    if (!addr.endsWith('@mail.ugm.ac.id') && !addr.endsWith('@ugm.ac.id')) {
+      error = 'Registration is only open to UGM addresses: @mail.ugm.ac.id (students) or @ugm.ac.id (lecturers and staff).';
       return;
     }
     loading = true;
@@ -49,7 +51,7 @@
     </div>
   </AuthShell>
 {:else}
-  <AuthShell title="Create your account" description="Free for students and staff with a <strong>@mail.ugm.ac.id</strong> email.">
+  <AuthShell title="Create your account" description="Free for students (<strong>@mail.ugm.ac.id</strong>) and lecturers or staff (<strong>@ugm.ac.id</strong>).">
     <form on:submit|preventDefault={handleRegister} class="space-y-4">
       {#if error}<Alert>{error}</Alert>{/if}
       <div>
@@ -58,7 +60,7 @@
       </div>
       <div>
         <label class="label" for="email">UGM email</label>
-        <input id="email" type="email" bind:value={email} placeholder="student@mail.ugm.ac.id" class="input" autocomplete="email" required />
+        <input id="email" type="email" bind:value={email} placeholder="name@mail.ugm.ac.id or name@ugm.ac.id" class="input" autocomplete="email" required />
       </div>
       <div>
         <label class="label" for="password">Password</label>
