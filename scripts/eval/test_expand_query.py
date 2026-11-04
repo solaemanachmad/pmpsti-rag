@@ -12,17 +12,15 @@ from expand import expand_query  # noqa: E402
 CUSTOM = [("sempro", "seminar proposal"), ("ta", "tugas akhir")]
 
 
-def test_expands_known_short_forms_once():
+def test_expands_the_admins_short_forms_once_in_any_case():
     assert expand_query("kapan sempro? sempro lagi", CUSTOM) == "kapan sempro (seminar proposal)? sempro lagi"
-    assert expand_query("Berapa sks tesis?", []) == "Berapa sks (Satuan Kredit Semester) tesis?"
-    assert expand_query("jumlah tendik DTETI", []) == \
-        "jumlah tendik (Tenaga Kependidikan) DTETI (Departemen Teknik Elektro dan Teknologi Informasi)"
+    assert expand_query("syarat TA", CUSTOM) == "syarat TA (tugas akhir)"
+    assert expand_query("data", CUSTOM) == "data"
 
 
-def test_two_letter_capitals_only_as_written_unless_the_admin_added_them():
-    assert expand_query("how do I apply", []) == "how do I apply"
-    assert expand_query("syarat DO", []) == "syarat DO (Drop Out)"
-    assert expand_query("syarat ta", CUSTOM) == "syarat ta (tugas akhir)"
+def test_built_in_acronyms_are_not_expanded():
+    assert expand_query("Berapa SKS tesis PMPSTI?", []) == "Berapa SKS tesis PMPSTI?"
+    assert expand_query("jumlah tendik", CUSTOM) == "jumlah tendik"
 
 
 def test_leaves_explained_and_unknown_words_alone():

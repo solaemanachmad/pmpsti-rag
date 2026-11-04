@@ -31,9 +31,9 @@ case, dropped vowels/letters, swapped letters, "brp"/"gmn"), and lists the quest
 typos push out of the top 5. Retrieval only: embeddings for the variants, no LLM calls.
 
 --expand [DB] searches every question with its abbreviations explained, as the backend does with
-Settings → "Expand abbreviations" (eval/expand.py = src/abbrev.rs): src/acronyms.json plus the
-admin's entries from the `abbreviations` table of DB (a URL or a .env variable name, read-only;
-default: the evaluated database). Compare with a run without it (--compare).
+Settings → "Expand abbreviations" (eval/expand.py = src/abbrev.rs): the admin's entries from the
+`abbreviations` table of DB (a URL or a .env variable name, read-only; default: the evaluated
+database). Compare with a run without it (--compare).
 
 The database comes from DATABASE_URL (root .env) and is opened READ-ONLY.
 Question embeddings are cached in eval/.cache/ so later runs use no embedding quota.
@@ -344,7 +344,7 @@ def main() -> None:
         with psycopg2.connect(src) as c:
             c.set_session(readonly=True)
             custom = load_custom(c.cursor())
-        print(f"Expanding abbreviations: {len(custom)} admin entries + src/acronyms.json")
+        print(f"Expanding abbreviations: {len(custom)} admin entries")
         spelled = {q: [expand_query(t, custom) for t in ts] for q, ts in spelled.items()}
     vectors = embed_questions(sorted({t for ts in spelled.values() for t in ts}))
 

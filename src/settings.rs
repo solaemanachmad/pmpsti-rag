@@ -28,7 +28,7 @@ pub struct Settings {
     /// (median 0.55), so the default 0.35 never drops a correct answer (scripts/eval_retrieval.py).
     pub min_score:       f64,
     /// Search a question with its abbreviations explained ("sempro (seminar proposal)"),
-    /// from Admin → Abbreviations and src/acronyms.json. Off until measured (eval --expand).
+    /// from Admin → Abbreviations (not src/acronyms.json, see abbrev.rs). Off until measured (eval --expand).
     pub expand_abbreviations: bool,
 }
 

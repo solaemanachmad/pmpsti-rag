@@ -183,7 +183,7 @@
     <button type="button" class="w-full flex items-center gap-2 px-5 py-4 text-left" on:click={() => (showBuiltin = !showBuiltin)} aria-expanded={showBuiltin}>
       <ChevronDown size={16} class="text-muted-foreground transition-transform {showBuiltin ? '' : '-rotate-90'}" />
       <span class="font-bold">Built-in list</span>
-      <span class="text-sm text-muted-foreground">· {builtin.length} · also used when documents are ingested (src/acronyms.json)</span>
+      <span class="text-sm text-muted-foreground">· {builtin.length} · used when documents are ingested (src/acronyms.json), not to expand questions — documents already spell them out</span>
     </button>
     {#if showBuiltin}
       <ul class="border-t divide-y max-h-96 overflow-y-auto">

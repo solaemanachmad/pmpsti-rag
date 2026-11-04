@@ -2,12 +2,15 @@
 //!
 //! - Candidates: short or upper-case words from query_logs that are not in any dictionary,
 //!   most used (and most often unanswered) first, so the admin can explain them.
-//! - Dictionary: the admin's entries (table `abbreviations`, no redeploy) plus the built-in
-//!   list `src/acronyms.json` (also used at ingest, see enrich.rs). Entries marked "ignored"
-//!   are words the admin said are not abbreviations; they leave the candidate list.
+//! - Dictionary: the admin's entries (table `abbreviations`, no redeploy). Entries marked
+//!   "ignored" are words the admin said are not abbreviations; they leave the candidate list.
+//!   The built-in list `src/acronyms.json` is used at ingest only (enrich.rs): documents
+//!   already carry "Satuan Kredit Semester (SKS)", so expanding SKS/PMPSTI/DTETI in questions
+//!   only adds common words to the keyword search — measured as a loss (E11 in
+//!   research/experiments.md: hybrid doc hit@5 98% → 93%).
 //! - Query expansion: with Settings → "Expand abbreviations" on, a question is searched as
 //!   "sempro (seminar proposal)". Only the search sees this; the log and the answer prompt keep
-//!   the question as asked. Mirrored by expand_query() in scripts/eval_retrieval.py.
+//!   the question as asked. Mirrored by scripts/eval/expand.py.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -48,27 +51,10 @@ pub struct Candidate {
 
 // ── Expansion ─────────────────────────────────────────────────────
 
-/// Built-in entries (src/acronyms.json) and the admin's active entries, as (short, expansion).
-/// Admin entries come first, so they win over a built-in with the same short form.
-pub fn dictionary(custom: &[(String, String)]) -> Vec<(String, String, bool)> {
-    let mut out: Vec<(String, String, bool)> =
-        custom.iter().map(|(s, e)| (s.clone(), e.clone(), true)).collect();
-    let taken: HashSet<String> = custom.iter().map(|(s, _)| s.to_lowercase()).collect();
-    for (s, e) in crate::enrich::acronym_list() {
-        if !taken.contains(&s.to_lowercase()) {
-            out.push((s.clone(), e.clone(), false));
-        }
-    }
-    out
-}
-
-/// "kapan sempro?" → "kapan sempro (seminar proposal)?". The first use of each known short form
-/// gets its expansion in brackets, unless the expansion is already in the question.
-/// Admin entries and built-in entries written in lower case ("tendik") match in any case;
-/// built-in capitals match in any case from 3 letters ("sks" = "SKS") and only as written for
-/// 2 letters ("TA", "DO", "IP"), so "do"/"ta" in ordinary words are left alone.
-pub fn expand_query(text: &str, custom: &[(String, String)]) -> String {
-    let dict = dictionary(custom);
+/// "kapan sempro?" → "kapan sempro (seminar proposal)?". The first use of each of the admin's
+/// short forms (any case, whole word) gets its meaning in brackets, unless the meaning is
+/// already in the question. Built-in acronyms are not expanded here (see the module docs).
+pub fn expand_query(text: &str, entries: &[(String, String)]) -> String {
     let lower_text = text.to_lowercase();
     let mut done: HashSet<String> = HashSet::new();
     let mut out = String::with_capacity(text.len() + 32);
@@ -79,14 +65,10 @@ pub fn expand_query(text: &str, custom: &[(String, String)]) -> String {
         out.push_str(word);
         let key = word.to_lowercase();
         if !done.contains(&key) {
-            let hit = dict.iter().find(|(short, _, custom)| {
-                let any_case = *custom || short.chars().any(|c| c.is_lowercase()) || short.chars().count() >= 3;
-                if any_case { short.to_lowercase() == key } else { short == word }
-            });
-            if let Some((_, expansion, _)) = hit {
-                if !lower_text.contains(&expansion.to_lowercase()) {
+            if let Some((_, meaning)) = entries.iter().find(|(short, _)| short.to_lowercase() == key) {
+                if !lower_text.contains(&meaning.to_lowercase()) {
                     out.push_str(" (");
-                    out.push_str(expansion);
+                    out.push_str(meaning);
                     out.push(')');
                 }
                 done.insert(key);
@@ -285,18 +267,16 @@ mod tests {
 
     // The same cases are in scripts/eval/test_expand_query.py — keep them in step.
     #[test]
-    fn expands_known_short_forms_once() {
+    fn expands_the_admins_short_forms_once_in_any_case() {
         assert_eq!(expand_query("kapan sempro? sempro lagi", &custom()), "kapan sempro (seminar proposal)? sempro lagi");
-        assert_eq!(expand_query("Berapa sks tesis?", &[]), "Berapa sks (Satuan Kredit Semester) tesis?");
-        assert_eq!(expand_query("jumlah tendik DTETI", &[]),
-                   "jumlah tendik (Tenaga Kependidikan) DTETI (Departemen Teknik Elektro dan Teknologi Informasi)");
+        assert_eq!(expand_query("syarat TA", &custom()), "syarat TA (tugas akhir)");
+        assert_eq!(expand_query("data", &custom()), "data");
     }
 
     #[test]
-    fn two_letter_capitals_only_as_written_unless_the_admin_added_them() {
-        assert_eq!(expand_query("how do I apply", &[]), "how do I apply");
-        assert_eq!(expand_query("syarat DO", &[]), "syarat DO (Drop Out)");
-        assert_eq!(expand_query("syarat ta", &custom()), "syarat ta (tugas akhir)");
+    fn built_in_acronyms_are_not_expanded() {
+        assert_eq!(expand_query("Berapa SKS tesis PMPSTI?", &[]), "Berapa SKS tesis PMPSTI?");
+        assert_eq!(expand_query("jumlah tendik", &custom()), "jumlah tendik");
     }
 
     #[test]
