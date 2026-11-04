@@ -1,5 +1,6 @@
 mod abbrev;
 mod auth;
+mod categories;
 mod db;
 mod draft_check;
 mod email;
@@ -256,6 +257,8 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/chunks",                   web::get().to(handlers::admin_list_chunks))
                     .route("/admin/documents/{id}",           web::delete().to(handlers::admin_delete_document))
                     .route("/admin/documents/{id}",           web::patch().to(handlers::admin_update_document))
+                    .route("/admin/documents/{id}/category",  web::patch().to(categories::set_document_category_handler))
+                    .route("/admin/categories",               web::get().to(categories::list_handler))
                     .route("/admin/chunks/{id}",              web::delete().to(handlers::admin_delete_chunk))
                     .route("/admin/chunks/{id}",              web::put().to(handlers::admin_update_chunk))
                     .route("/admin/logs",                web::get().to(handlers::admin_query_logs))

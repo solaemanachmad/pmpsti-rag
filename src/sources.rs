@@ -670,6 +670,8 @@ async fn approve_in_tx(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, document_
     }
     sqlx::query("UPDATE source_files SET status = 'active', updated_at = NOW() WHERE document_id = $1")
         .bind(document_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+    // A new version keeps the topic category of the version it replaces (src/categories.rs)
+    crate::categories::inherit_in_tx(tx, document_id, &replaced).await.map_err(|e| e.to_string())?;
     Ok(Some((res.rows_affected(), replaced)))
 }
 
