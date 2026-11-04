@@ -30,12 +30,12 @@
 
 <svelte:head><title>Sign in · DTETI Answers</title></svelte:head>
 
-<AuthShell title="Welcome back" description="Sign in with your @mail.ugm.ac.id account.">
+<AuthShell title="Welcome back" description="Sign in with your UGM account (@mail.ugm.ac.id or @ugm.ac.id).">
   <form on:submit|preventDefault={handleLogin} class="space-y-4">
     {#if error}<Alert>{error}</Alert>{/if}
     <div>
       <label class="label" for="email">Email</label>
-      <input id="email" type="email" bind:value={email} placeholder="student@mail.ugm.ac.id" class="input" autocomplete="email" required />
+      <input id="email" type="email" bind:value={email} placeholder="name@mail.ugm.ac.id" class="input" autocomplete="email" required />
     </div>
     <div>
       <div class="flex items-center justify-between mb-1.5">

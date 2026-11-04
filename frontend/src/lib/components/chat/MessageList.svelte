@@ -2,6 +2,8 @@
   import { renderMarkdown } from '$lib/markdown';
   import type { SourceRef } from '$lib/api/client';
   import CitationPopover from './CitationPopover.svelte';
+  import AnswerProgress from './AnswerProgress.svelte';
+  import type { AnswerStatus } from '$lib/api/client';
   import Alert from '../ui/Alert.svelte';
   import { GraduationCap } from 'lucide-svelte';
 
@@ -15,6 +17,8 @@
   export let streamingText = '';
   export let isStreaming = false;
   export let error = '';
+  /** what the backend is doing before the first words arrive */
+  export let progress: AnswerStatus | null = null;
 
   let listEl: HTMLElement | null = null;
   /** sources of the message that contains a citation mark */
@@ -54,10 +58,7 @@
           </div>
           {#if isStreaming}<span class="cursor-blink text-muted-foreground"></span>{/if}
         {:else}
-          <div class="flex items-center gap-2 text-sm text-muted-foreground h-7">
-            <span class="flex gap-1 text-primary"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span>
-            Searching the documents…
-          </div>
+          <div class="pt-1"><AnswerProgress status={progress} /></div>
         {/if}
       </div>
     </div>

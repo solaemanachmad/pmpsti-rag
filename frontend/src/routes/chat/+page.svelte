@@ -4,6 +4,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { chat, askStream, faq } from '$lib/api/client';
+  import type { AnswerStatus } from '$lib/api/client';
   import type { ChatMessage } from '$lib/api/client';
   import { currentUser } from '$lib/stores/auth';
   import { activeSessionId, refreshSessions } from '$lib/stores/chat';
@@ -15,6 +16,7 @@
   let messages: ChatMessage[] = [];
   let streamingText = '';
   let isStreaming = false;
+  let progress: AnswerStatus | null = null; // searching → reading → writing, before the text
   let query = '';
   let error = '';
   let loadingSession = false;
@@ -61,6 +63,7 @@
     cancelStream = null;
     isStreaming = false;
     streamingText = '';
+    progress = null;
   }
 
   onDestroy(() => {
@@ -77,6 +80,7 @@
 
     isStreaming = true;
     streamingText = '';
+    progress = null;
     const startedIn = $activeSessionId;
 
     cancelStream = askStream(
@@ -86,6 +90,7 @@
       async (sources, sid) => {
         messages = [...messages, { role: 'assistant', content: streamingText, created_at: new Date().toISOString(), sources }];
         streamingText = '';
+        progress = null;
         isStreaming = false;
         cancelStream = null;
         if (sid && sid !== startedIn) {
@@ -99,8 +104,10 @@
         error = err;
         isStreaming = false;
         streamingText = '';
+        progress = null;
         cancelStream = null;
-      }
+      },
+      (status) => { progress = status; scrollBottom(); }
     );
   }
 
@@ -148,7 +155,7 @@
           {/if}
         </div>
       {:else}
-        <MessageList {messages} {streamingText} {isStreaming} {error} />
+        <MessageList {messages} {streamingText} {isStreaming} {error} {progress} />
       {/if}
     </div>
   </div>

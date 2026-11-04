@@ -398,11 +398,19 @@ function typewriter(emit: (text: string) => void, isCancelled: () => boolean) {
   };
 }
 
+/** What the backend is doing before the text arrives (shown as progress in the chat). */
+export interface AnswerStatus {
+  stage: 'searching' | 'reading' | 'writing';
+  /** sources being read (from the "reading" step on) */
+  sources: { title: string; site: string }[];
+}
+
 /** Read an answer response; calls onChunk per piece of text and returns the final payload. */
 async function readAnswer<T extends { answer: string }>(
   res: Response,
   onChunk: (text: string) => void,
-  isCancelled: () => boolean
+  isCancelled: () => boolean,
+  onStatus?: (status: AnswerStatus) => void
 ): Promise<T | null> {
   if (!(res.headers.get('content-type') ?? '').includes('ndjson') || !res.body) {
     const json = await res.json();
@@ -415,10 +423,15 @@ async function readAnswer<T extends { answer: string }>(
   const decoder = new TextDecoder();
   let buf = '';
   let done: T | null = null;
+  let reading: AnswerStatus['sources'] = [];
   const handle = (line: string) => {
     if (!line.trim()) return;
     const msg = JSON.parse(line);
     if (msg.type === 'delta') onChunk(msg.text);
+    else if (msg.type === 'status') {
+      if (Array.isArray(msg.sources)) reading = msg.sources;
+      onStatus?.({ stage: msg.stage, sources: reading });
+    }
     else if (msg.type === 'done') done = msg as T;
     else if (msg.type === 'error') throw new Error(msg.error || 'Failed to get an answer');
   };
@@ -443,7 +456,8 @@ export function askStream(
   session_id: string | undefined,
   onChunk: (text: string) => void,
   onDone: (sources: SourceRef[], session_id: string, ms: number) => void,
-  onError: (err: string) => void
+  onError: (err: string) => void,
+  onStatus?: (status: AnswerStatus) => void
 ): () => void {
   const ctrl = new AbortController();
   let cancelled = false;
@@ -465,7 +479,7 @@ export function askStream(
       }
 
       const typing = typewriter(onChunk, () => cancelled);
-      const data = await readAnswer<AskResponse>(res, typing.push, () => cancelled);
+      const data = await readAnswer<AskResponse>(res, typing.push, () => cancelled, onStatus);
       if (!data) return;
       await typing.drain();
       if (cancelled) return;
@@ -718,7 +732,8 @@ export function askPublic(
   guestToken: string,
   onChunk: (text: string) => void,
   onDone: (res: GuestAskResponse) => void,
-  onError: (err: string) => void
+  onError: (err: string) => void,
+  onStatus?: (status: AnswerStatus) => void
 ): () => void {
   const ctrl = new AbortController();
   let cancelled = false;
@@ -747,7 +762,7 @@ export function askPublic(
       }
 
       const typing = typewriter(onChunk, () => cancelled);
-      const data = await readAnswer<GuestAskResponse>(res, typing.push, () => cancelled);
+      const data = await readAnswer<GuestAskResponse>(res, typing.push, () => cancelled, onStatus);
       if (!data) return;
       await typing.drain();
       if (cancelled) return;
