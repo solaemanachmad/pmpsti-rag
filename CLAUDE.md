@@ -37,6 +37,8 @@ This repository is **public**.
 - Schema changes go in `Database::setup` as idempotent statements (`CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`).
   Existing rows must keep working (e.g. new `status` defaults to `'active'`).
 - Every search SQL in `db.rs` is mirrored by an `m_*` function in `scripts/eval_retrieval.py`. Change both together.
+- Query abbreviation expansion (`src/abbrev.rs` `expand_query`) is mirrored by `scripts/eval/expand.py`;
+  `scripts/eval/test_expand_query.py` repeats the Rust test cases. Change both together.
 
 ## Quotas (Gemini free tier)
 - ~500 generation calls/day; an end-to-end eval run of 26 questions costs ~80. Embeddings are cached in `eval/.cache/`.

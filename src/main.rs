@@ -1,3 +1,4 @@
+mod abbrev;
 mod auth;
 mod db;
 mod draft_check;
@@ -258,6 +259,10 @@ async fn main() -> std::io::Result<()> {
                     .route("/admin/chunks/{id}",              web::delete().to(handlers::admin_delete_chunk))
                     .route("/admin/chunks/{id}",              web::put().to(handlers::admin_update_chunk))
                     .route("/admin/logs",                web::get().to(handlers::admin_query_logs))
+                    .route("/admin/abbreviations",            web::get().to(abbrev::list))
+                    .route("/admin/abbreviations",            web::post().to(abbrev::save))
+                    .route("/admin/abbreviations/candidates", web::get().to(abbrev::list_candidates))
+                    .route("/admin/abbreviations/{id}",       web::delete().to(abbrev::delete))
                     .route("/admin/settings",            web::get().to(settings_api::get_settings))
                     .route("/admin/settings",            web::put().to(settings_api::put_settings))
                     .route("/admin/settings/reset",      web::post().to(settings_api::reset_settings))

@@ -385,6 +385,20 @@ impl Database {
             }
         }
 
+        // Abbreviations explained by the admin (Admin → Abbreviations, src/abbrev.rs)
+        if let Err(e) = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS abbreviations (
+                id         BIGSERIAL PRIMARY KEY,
+                short      TEXT NOT NULL UNIQUE,
+                expansion  TEXT NOT NULL DEFAULT '',
+                status     TEXT NOT NULL DEFAULT 'active',
+                updated_by BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )").execute(&self.pool).await {
+            log::warn!("abbreviations table skipped: {e}");
+        }
+
         // Questions logged before groups existed: same wording = same group
         let backfill = format!(
             "UPDATE query_logs q SET group_id = g.first_id
@@ -1482,6 +1496,11 @@ const KEYWORD_STOPWORDS: &[&str] = &[
 /// Turn a free-form question into an OR tsquery ("dosen | pembimbing | tesis").
 /// Only ASCII letters/digits survive, so the result is safe to pass to `to_tsquery`.
 /// `None` when no words are left.
+/// A question or function word left out of keyword search ("apa", "berapa", "the" …).
+pub fn is_keyword_stopword(word: &str) -> bool {
+    KEYWORD_STOPWORDS.contains(&word)
+}
+
 fn keyword_tsquery(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
     let mut terms: Vec<&str> = Vec::new();

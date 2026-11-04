@@ -1093,13 +1093,19 @@ async fn retrieve(
 ) -> Result<Retrieved, String> {
     // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
     let search_mode = search_mode.unwrap_or("hybrid");
+    // Admin → Settings: search with abbreviations explained; the question itself is unchanged
+    let searched = if crate::settings::get().expand_abbreviations {
+        crate::abbrev::expand_query(query, &crate::abbrev::active_entries(state.db.pool()).await)
+    } else {
+        query.to_string()
+    };
     let (all_chunks, query_type) = tokio::join!(
-        state.rag.search_chunks(query, category, search_mode, top_k),
+        state.rag.search_chunks(&searched, category, search_mode, top_k),
         state.rag.classify_query(query),
     );
     let (all_chunks, embedding) = all_chunks.map_err(|e| format!("Gagal mencari dokumen: {e}"))?;
     let tuning = crate::settings::get();
-    let hits = filter_sources(&all_chunks, query, tuning.min_score, 0.25, max_sources);
+    let hits = filter_sources(&all_chunks, &searched, tuning.min_score, 0.25, max_sources);
     let contexts = state.rag.build_context(&query_type, &hits).await;
     let top_score = all_chunks.first().map(|c| c.score as f32).unwrap_or(0.0);
     Ok(Retrieved { contexts, query_type, top_score, embedding })

@@ -210,8 +210,41 @@ are true duplicates in the test sets (0.99 "rata-rata EWMP … berapa" vs "Berap
 Letter-trigram overlap separates typos better (typos ≥ 0.49; different questions p99 0.36) but also
 scores that pair 0.69. Rule adopted: group when embedding ≥ 0.80 AND trigram overlap ≥ 0.45
 (`src/db.rs` `similar_group`, env `SIMILAR_QUESTION_THRESHOLD` / `SIMILAR_QUESTION_MIN_OVERLAP`);
-the combined grid is printed by `question_similarity.py` and is to be confirmed by re-running it
-(cached, no quota).
+the combined grid is printed by `question_similarity.py` (`20261104-2254_similarity.json`):
+
+| embedding ≥ | overlap ≥ | typos grouped | different pairs merged |
+|---|---|---|---|
+| 0.80 | 0.45 | 92.8 % | 8 (0.28 %) |
+| 0.85 | 0.45 | 86.2 % | 8 |
+| 0.88 | 0.45 | 75.7 % | 5 |
+
+The script's automatic pick (0.88, ≤ 0.2 % merged) counts as errors the 3 pairs that are true duplicates
+in the test sets (EWMP, izin perkuliahan, tendik); without them 0.80 / 0.45 merges about 5 different pairs
+(0.18 %) while grouping 93 % of typos. Kept 0.80 / 0.45.
+
+## E11 — Expanding abbreviations in questions · 2026-11-05 · branch `feat/abbreviations`
+
+`20261104-2317_abbrev-off.json`, `20261105-0438_abbrev-on.json`. Snapshot `eval-snapshot-2026-10-17`, same
+test sets. Run 1 (code `055bb8e`): every question searched with the 51 built-in acronyms of
+`src/acronyms.json` explained ("PMPSTI (Program Magister Program Studi Teknologi Informasi)"); no admin
+entries yet.
+
+| Mode | doc hit@1 | doc hit@5 | MRR | ans@5 |
+|---|---|---|---|---|
+| hybrid, off | 90 % | 98 % | 0.93 | 88 % |
+| hybrid, built-in expanded | 86 % | 93 % | 0.89 | 83 % |
+| keyword, off → expanded | 60 → 48 % | 83 → 76 % | 0.69 → 0.59 | 54 → 54 % |
+| semantic, off → expanded | 88 → 88 % | 98 → 98 % | 0.92 → 0.92 | 83 → 83 % |
+
+Finding: expanding acronyms the documents already use hurts (hybrid hit@5 −5 points = 2 of 42). The
+documents already contain "Satuan Kredit Semester (SKS)" from ingest, so the expansion only adds common
+words (program, studi, teknologi, informasi) to the OR keyword query, which then favours generic chunks;
+the embedding is unaffected. Change: the search expands only the admin's entries (Admin →
+Abbreviations: student short forms the documents do not use, e.g. "sempro"); built-in acronyms stay
+ingest-only. Expansion stays off by default.
+
+Next (E11b): after real entries exist, add 1–2 test questions per entry (`"source": "log-abbrev"`) and
+compare off / on. Turn expansion on only if the abbreviation questions improve and the rest do not drop.
 
 ## Threats to validity (to address before publication)
 

@@ -15,6 +15,7 @@ Change the m_* functions here together with the backend so results stay comparab
     python eval_retrieval.py --verbose           # per-question details
     python eval_retrieval.py --backend http://localhost:8080   # + end-to-end answer check
     python eval_retrieval.py --typos --label typos   # same questions with typos (eval/typos.py)
+    python eval_retrieval.py --expand PROD_DATABASE_URL --label expand   # abbreviations explained
 
 Metrics:
   doc hit@1 / hit@5 / MRR  : right document at rank 1 / in the top 5 (out of 10 results)
@@ -28,6 +29,11 @@ Questions whose source is not ingested yet, or is out of scope, are counted sepa
 --typos scores every question three times: as written and in two misspelled versions (lower
 case, dropped vowels/letters, swapped letters, "brp"/"gmn"), and lists the questions that
 typos push out of the top 5. Retrieval only: embeddings for the variants, no LLM calls.
+
+--expand [DB] searches every question with its abbreviations explained, as the backend does with
+Settings → "Expand abbreviations" (eval/expand.py = src/abbrev.rs): the admin's entries from the
+`abbreviations` table of DB (a URL or a .env variable name, read-only; default: the evaluated
+database). Compare with a run without it (--compare).
 
 The database comes from DATABASE_URL (root .env) and is opened READ-ONLY.
 Question embeddings are cached in eval/.cache/ so later runs use no embedding quota.
@@ -53,6 +59,7 @@ from gemini_embed import DIM as EMBED_DIM, MODEL as EMBED_MODEL, GeminiEmbedding
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "eval"))
 from typos import SEED as TYPO_SEED, typo_variants  # noqa: E402
+from expand import expand_query, load_custom  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 EVAL_DIR = HERE / "eval"
@@ -212,6 +219,7 @@ def run_metadata(cur, args) -> dict:
         "llm_for_e2e": {"backend": llm_backend,
                         "model": os.environ.get("GEMINI_MODEL" if llm_backend == "gemini" else "LLM_MODEL", "")}
                        if args.backend else None,
+        "expand_abbreviations": args.expand is not None,
         "settings": {"top_k": TOP_K, "answer_k": ANSWER_K, "e2e_pause_s": E2E_PAUSE_S,
                      "hybrid_weights": [0.7, 0.3], "rrf_k": 60, "ts_config": "indonesian"},
         "corpus": {"chunks": len(rows), "documents": len({d for _, d, _ in rows}),
@@ -307,14 +315,19 @@ def main() -> None:
     ap.add_argument("--compare", help="Earlier results file to compare against")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--backend", help="Backend URL for the end-to-end check, e.g. http://localhost:8080")
+    ap.add_argument("--expand", nargs="?", const="", default=None, metavar="DB",
+                    help="Search with abbreviations explained; DB holds the admin's entries")
     ap.add_argument("--typos", action="store_true",
                     help="Also score two misspelled versions of every question (retrieval only)")
     args = ap.parse_args()
     if args.typos and args.backend:
         sys.exit("--typos measures retrieval only; run --backend separately.")
     # --db SNAPSHOT_DATABASE_URL: the name of a variable from .env instead of the URL itself
-    if args.db and re.fullmatch(r"[A-Z][A-Z0-9_]*", args.db):
-        args.db = os.environ.get(args.db) or sys.exit(f"{args.db} is not set (.env).")
+    def resolve(db: str) -> str:
+        if db and re.fullmatch(r"[A-Z][A-Z0-9_]*", db):
+            return os.environ.get(db) or sys.exit(f"{db} is not set (.env).")
+        return db
+    args.db = resolve(args.db)
     if not args.db:
         sys.exit("DATABASE_URL is not set.")
     modes = [m.strip() for m in args.modes.split(",")]
@@ -325,6 +338,14 @@ def main() -> None:
     # variant 0 = as written; --typos adds 1 and 2 (same misspellings on every run)
     rng = __import__("random").Random(TYPO_SEED)
     spelled = {q: [q] + (typo_variants(q, rng) + [q])[:2] if args.typos else [q] for q in originals}
+    custom = []
+    if args.expand is not None:
+        src = resolve(args.expand) or args.db
+        with psycopg2.connect(src) as c:
+            c.set_session(readonly=True)
+            custom = load_custom(c.cursor())
+        print(f"Expanding abbreviations: {len(custom)} admin entries")
+        spelled = {q: [expand_query(t, custom) for t in ts] for q, ts in spelled.items()}
     vectors = embed_questions(sorted({t for ts in spelled.values() for t in ts}))
 
     conn = psycopg2.connect(args.db)
