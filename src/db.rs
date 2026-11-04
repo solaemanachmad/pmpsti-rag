@@ -422,6 +422,8 @@ impl Database {
         ").execute(&self.pool).await?;
 
         crate::sources::setup_tables(&self.pool).await?;
+        // Topic categories + documents.category_id (src/categories.rs); needs the documents table
+        crate::categories::setup(&self.pool).await?;
 
         log::info!("Database schema ready.");
         Ok(())
@@ -1675,6 +1677,10 @@ pub struct AdminDocument {
     pub valid_from:    Option<String>,
     pub source_version:    String,
     pub source_valid_from: Option<String>,
+    /// Topic category (src/categories.rs); None = uncategorized
+    pub category_id:   Option<i64>,
+    /// "Akademik › Persuratan" (empty when uncategorized)
+    pub category_path: String,
 }
 
 impl Database {
@@ -1845,7 +1851,8 @@ impl Database {
         let rows = sqlx::query(
             "SELECT x.*, s.id AS source_id, COALESCE(s.title, '') AS source_title,
                     COALESCE(s.kind, '') AS source_kind, COALESCE(s.url, '') AS source_root,
-                    COALESCE(s.version_label, '') AS source_version, s.valid_from::text AS source_valid_from
+                    COALESCE(s.version_label, '') AS source_version, s.valid_from::text AS source_valid_from,
+                    COALESCE(CASE WHEN catp.name IS NULL THEN cat.name ELSE catp.name || ' › ' || cat.name END, '') AS category_path
              FROM (
                 SELECT document_id,
                        COALESCE(MIN(title),'') as title,
@@ -1857,12 +1864,15 @@ impl Database {
                        MIN(source_file_id) as source_file_id,
                        COALESCE(MAX(version_label),'') as version_label,
                        MAX(valid_from)::text as valid_from,
+                       MIN(category_id) as category_id,
                        COUNT(*) as chunk_count
                 FROM documents
                 GROUP BY document_id
              ) x
              LEFT JOIN source_files f ON f.id = x.source_file_id
              LEFT JOIN sources s ON s.id = f.source_id
+             LEFT JOIN categories cat ON cat.id = x.category_id
+             LEFT JOIN categories catp ON catp.id = cat.parent_id
              ORDER BY x.category, x.source_url, x.document_id"
         )
         .fetch_all(&self.pool)
@@ -1886,6 +1896,8 @@ impl Database {
             valid_from:    r.get("valid_from"),
             source_version:    r.get("source_version"),
             source_valid_from: r.get("source_valid_from"),
+            category_id:   r.get("category_id"),
+            category_path: r.get("category_path"),
         }).collect())
     }
 
