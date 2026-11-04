@@ -184,8 +184,14 @@ export const admin = {
     request<{ ok: boolean; model: string; ms: number; reply?: string; error?: string }>(
       '/admin/settings/test', { method: 'POST', body: JSON.stringify({ model }) }),
   // Query logs
-  queryLogs: (limit = 50, offset = 0) =>
-    request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?limit=${limit}&offset=${offset}`),
+  queryLogs: (limit = 50, offset = 0, f: QueryLogFilter = {}) => {
+    const p = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (f.outcome) p.set('outcome', f.outcome);
+    if (f.who) p.set('who', f.who);
+    if (f.days) p.set('days', String(f.days));
+    if (f.q?.trim()) p.set('q', f.q.trim());
+    return request<{ logs: AdminQueryLog[]; total: number }>(`/admin/logs?${p}`);
+  },
 
   // Sources from links (Google Drive / website PDFs) and draft review
   sources: () => request<SourceRow[]>('/admin/sources'),
@@ -667,14 +673,26 @@ export interface AdminQueryLog {
   detected_language: string;
   num_results: number;
   search_time_ms: number;
-  user_id: number | null;
-  session_id: string | null;
+  /** asked without an account (who asked is not shown) */
+  guest: boolean;
   created_at: string;
   /** answered | not_found | no_sources ('' = logged before outcomes existed) */
   outcome?: '' | 'answered' | 'not_found' | 'no_sources';
+  /** questions with the same meaning within the filter, this one included */
+  similar: number;
+}
+export interface QueryLogFilter {
+  outcome?: '' | 'answered' | 'not_found' | 'no_sources';
+  who?: '' | 'guest' | 'user';
+  /** last N days; 0 = all */
+  days?: number;
+  q?: string;
 }
 export interface UnansweredQuestion {
+  /** most common wording */
   query: string;
+  /** other wordings of the same question (typos, word order) */
+  variants: string[];
   times: number;
   not_found: number;
   last_asked: string;
@@ -716,6 +734,8 @@ export interface TopQuery {
   query_text: string;
   count: number;
   last_asked: string;
+  /** different wordings grouped into this question */
+  variants?: number;
 }
 
 // ── Public ask (guest, no auth) ──

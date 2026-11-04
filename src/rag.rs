@@ -411,12 +411,12 @@ impl RagEngine {
         category_filter: Option<&str>,
         search_mode:     &str,
         top_k:           i64,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<(Vec<SearchResult>, Option<Vec<f32>>)> {
         Ok(match search_mode {
-            "semantic" => self.search.search_semantic(query, top_k, category_filter).await?,
-            "keyword"  => self.search.search_keyword(query, top_k, category_filter).await?,
-            "rrf"      => self.search.search_rrf(query, top_k, category_filter).await?,
-            _          => self.search.search(query, top_k, category_filter).await?, // hybrid
+            "semantic" => (self.search.search_semantic(query, top_k, category_filter).await?, None),
+            "keyword"  => (self.search.search_keyword(query, top_k, category_filter).await?, None),
+            "rrf"      => (self.search.search_rrf(query, top_k, category_filter).await?, None),
+            _          => self.search.search_with_embedding(query, top_k, category_filter).await?, // hybrid
         })
     }
 

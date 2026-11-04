@@ -45,8 +45,10 @@ impl DocVersion {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UnansweredQuestion {
-    /// Most recent wording
+    /// Most common wording in the group
     pub query:       String,
+    /// Other wordings of the same question (typos, word order), at most 5
+    pub variants:    Vec<String>,
     pub times:       i64,
     /// How many of those got "not in the documents" (the rest had no sources at all)
     pub not_found:   i64,
@@ -352,6 +354,12 @@ impl Database {
             // Set when an admin marks an unanswered question as handled
             "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ",
             "CREATE INDEX IF NOT EXISTS query_logs_outcome_idx ON query_logs(outcome, created_at DESC)",
+            // Similar questions (typos, other wording) share a group_id: the id of the first question
+            // of the group. The embedding is the one made for the search (no extra Gemini call).
+            "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS embedding vector(768)",
+            "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS group_id BIGINT",
+            "CREATE INDEX IF NOT EXISTS query_logs_group_idx ON query_logs(group_id)",
+            "CREATE INDEX IF NOT EXISTS query_logs_embedding_idx ON query_logs USING hnsw (embedding vector_cosine_ops)",
             // Documents — safe migration untuk DB yang sudah ada
             "ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
             "ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
@@ -375,6 +383,17 @@ impl Database {
             if let Err(e) = sqlx::query(sql).execute(&self.pool).await {
                 log::warn!("Migration skipped ({}): {}", sql, e);
             }
+        }
+
+        // Questions logged before groups existed: same wording = same group
+        let backfill = format!(
+            "UPDATE query_logs q SET group_id = g.first_id
+             FROM (SELECT {NORM_QUERY} AS k, MIN(id) AS first_id FROM query_logs GROUP BY 1) g
+             WHERE q.group_id IS NULL AND {NORM_Q} = g.k",
+            NORM_Q = NORM_QUERY.replace("query_text", "q.query_text"),
+        );
+        if let Err(e) = sqlx::query(&backfill).execute(&self.pool).await {
+            log::warn!("query_logs group backfill skipped: {e}");
         }
 
         // Tabel faq_pins: admin bisa pin query tertentu agar selalu muncul di FAQ
@@ -702,6 +721,7 @@ impl Database {
     //  QUERY LOGGING
     // ════════════════════════════════════════════════════════════
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_query(
         &self,
         query_text:        &str,
@@ -713,12 +733,16 @@ impl Database {
         session_id:        Option<&str>,
         user_id:           Option<i64>,
         outcome:           &str,
+        embedding:         Option<Vec<f32>>,
     ) -> Result<()> {
-        sqlx::query(
+        let embedding = embedding.map(Vector::from);
+        let group_id = self.similar_group(query_text, embedding.as_ref()).await;
+        let id: i64 = sqlx::query_scalar(
             "INSERT INTO query_logs
                 (query_text, detected_language, detected_domain,
-                 num_results, top_score, search_time_ms, session_id, user_id, outcome)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                 num_results, top_score, search_time_ms, session_id, user_id, outcome, embedding, group_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             RETURNING id",
         )
         .bind(query_text)
         .bind(detected_language)
@@ -729,17 +753,53 @@ impl Database {
         .bind(session_id)
         .bind(user_id)
         .bind(outcome)
-        .execute(&self.pool)
+        .bind(embedding)
+        .bind(group_id)
+        .fetch_one(&self.pool)
         .await?;
+        if group_id.is_none() {
+            sqlx::query("UPDATE query_logs SET group_id = id WHERE id = $1").bind(id).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
-    /// Questions the assistant could not answer, grouped by wording (case, spaces and
-    /// trailing punctuation ignored), most asked first. Handled ones are left out.
+    /// Group of an earlier question that means the same: the nearest logged question when its
+    /// embedding is at least `similar_threshold()` similar, else one with the same wording.
+    async fn similar_group(&self, query_text: &str, embedding: Option<&Vector>) -> Option<i64> {
+        if let Some(e) = embedding {
+            let near: Option<(Option<i64>, f64)> = sqlx::query_as(
+                "SELECT group_id, 1 - (embedding <=> $1) AS similarity
+                 FROM query_logs WHERE embedding IS NOT NULL
+                 ORDER BY embedding <=> $1 LIMIT 1",
+            )
+            .bind(e)
+            .fetch_optional(&self.pool).await.ok().flatten();
+            if let Some((Some(gid), sim)) = near {
+                if sim >= similar_threshold() { return Some(gid); }
+            }
+        }
+        sqlx::query_scalar(&format!(
+            "SELECT group_id FROM query_logs WHERE {NORM_QUERY} = {norm} AND group_id IS NOT NULL LIMIT 1",
+            norm = NORM_QUERY.replace("query_text", "$1"),
+        ))
+        .bind(query_text)
+        .fetch_optional(&self.pool).await.ok().flatten()
+    }
+
+    /// Delete query logs older than `days` (0 = keep everything). Returns rows deleted.
+    pub async fn prune_query_logs(&self, days: i64) -> Result<u64> {
+        if days <= 0 { return Ok(0); }
+        let res = sqlx::query("DELETE FROM query_logs WHERE created_at < NOW() - ($1::bigint * INTERVAL '1 day')")
+            .bind(days).execute(&self.pool).await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Questions the assistant could not answer, grouped by meaning (typos and other wordings of
+    /// the same question share a group), most asked first. Handled ones are left out.
     pub async fn unanswered_questions(&self, days: i64, include_no_sources: bool) -> Result<Vec<UnansweredQuestion>> {
         let rows = sqlx::query(
-            "SELECT btrim(regexp_replace(regexp_replace(lower(query_text), '[\\s?!.]+$', ''), '\\s+', ' ', 'g')) AS key,
-                    (array_agg(query_text ORDER BY created_at DESC))[1] AS query,
+            "SELECT mode() WITHIN GROUP (ORDER BY query_text) AS query,
+                    (array_agg(DISTINCT query_text))[1:6] AS variants,
                     COUNT(*) AS times,
                     COUNT(*) FILTER (WHERE outcome = 'not_found') AS not_found,
                     MAX(created_at)::text AS last_asked,
@@ -749,7 +809,7 @@ impl Database {
              WHERE resolved_at IS NULL
                AND created_at >= NOW() - ($1::bigint * INTERVAL '1 day')
                AND (outcome = 'not_found' OR ($2 AND outcome = 'no_sources'))
-             GROUP BY key
+             GROUP BY COALESCE(group_id, id)
              ORDER BY times DESC, last_asked DESC
              LIMIT 200",
         )
@@ -757,13 +817,18 @@ impl Database {
         .bind(include_no_sources)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.iter().map(|r| UnansweredQuestion {
-            query:       r.get("query"),
-            times:       r.get("times"),
-            not_found:   r.get("not_found"),
-            last_asked:  r.get("last_asked"),
-            first_asked: r.get("first_asked"),
-            ids:         r.get("ids"),
+        Ok(rows.iter().map(|r| {
+            let query: String = r.get("query");
+            let variants: Vec<String> = r.get::<Vec<String>, _>("variants").into_iter().filter(|v| *v != query).collect();
+            UnansweredQuestion {
+                query,
+                variants,
+                times:       r.get("times"),
+                not_found:   r.get("not_found"),
+                last_asked:  r.get("last_asked"),
+                first_asked: r.get("first_asked"),
+                ids:         r.get("ids"),
+            }
         }).collect())
     }
 
@@ -2002,12 +2067,15 @@ impl Database {
         if remaining > 0 {
             // Top queries dari query_logs, exclude yang sudah di pinned
             let pinned_arr: Vec<&str> = pinned.iter().map(|s| s.as_str()).collect();
+            // Most asked answered questions, one per group (its most common wording); groups
+            // that contain a pinned question are skipped
             let top: Vec<String> = sqlx::query(
-                r#"SELECT query_text
+                r#"SELECT mode() WITHIN GROUP (ORDER BY query_text) AS query_text
                    FROM query_logs
                    WHERE LENGTH(query_text) BETWEEN 15 AND 200
-                     AND query_text NOT IN (SELECT question FROM faq_pins)
-                   GROUP BY query_text
+                     AND outcome IN ('answered', '')
+                   GROUP BY COALESCE(group_id, id)
+                   HAVING NOT bool_or(query_text IN (SELECT question FROM faq_pins))
                    ORDER BY COUNT(*) DESC, MAX(created_at) DESC
                    LIMIT $1"#
             )
@@ -2065,10 +2133,13 @@ impl Database {
     /// Top queries dari query_logs (untuk admin pilih yang mau di-pin)
     pub async fn faq_top_queries(&self, limit: i64) -> Result<Vec<TopQuery>, String> {
         sqlx::query_as::<_, TopQuery>(
-            r#"SELECT query_text, COUNT(*)::BIGINT AS count, MAX(created_at)::TEXT AS last_asked
+            r#"SELECT mode() WITHIN GROUP (ORDER BY query_text) AS query_text,
+                      COUNT(*)::BIGINT AS count, MAX(created_at)::TEXT AS last_asked,
+                      COUNT(DISTINCT query_text)::BIGINT AS variants
                FROM query_logs
                WHERE LENGTH(query_text) BETWEEN 15 AND 200
-               GROUP BY query_text
+                 AND outcome IN ('answered', '')
+               GROUP BY COALESCE(group_id, id)
                ORDER BY count DESC, MAX(created_at) DESC
                LIMIT $1"#
         )
@@ -2094,9 +2165,12 @@ pub struct FaqPin {
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct TopQuery {
+    /// Most common wording of the question
     pub query_text:  String,
     pub count:       i64,
     pub last_asked:  String,
+    /// How many different wordings were grouped (typos, word order)
+    pub variants:    i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2106,32 +2180,62 @@ pub struct AdminQueryLog {
     pub detected_language: String,
     pub num_results:     i32,
     pub search_time_ms:  i64,
-    pub user_id:         Option<i64>,
-    pub session_id:      Option<String>,
+    /// asked without an account (the user is not shown)
+    pub guest:           bool,
     pub created_at:      String,
     /// answered | not_found | no_sources ('' before outcomes were logged)
     pub outcome:         String,
+    /// questions in the same similarity group within the filter (this one included)
+    pub similar:         i64,
+}
+
+/// Filters of Admin → Query Logs ('' / 0 = no filter).
+#[derive(Debug, Clone, Default)]
+pub struct QueryLogFilter {
+    /// answered | not_found | no_sources
+    pub outcome: String,
+    /// guest | user
+    pub who:     String,
+    /// last N days
+    pub days:    i64,
+    /// text contained in the question
+    pub search:  String,
+}
+
+/// Normalised wording of a question in SQL (case, repeated spaces and trailing ?!. ignored).
+const NORM_QUERY: &str = "btrim(regexp_replace(regexp_replace(lower(query_text), '[\\s?!.]+$', ''), '\\s+', ' ', 'g'))";
+
+/// Cosine similarity at which two questions count as the same (env SIMILAR_QUESTION_THRESHOLD,
+/// default 0.90; calibrate with scripts/eval/question_similarity.py).
+pub fn similar_threshold() -> f64 {
+    static T: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *T.get_or_init(|| std::env::var("SIMILAR_QUESTION_THRESHOLD").ok()
+        .and_then(|v| v.parse().ok()).filter(|t: &f64| (0.5..=1.0).contains(t)).unwrap_or(0.90))
 }
 
 impl Database {
-    pub async fn admin_list_query_logs(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<(Vec<AdminQueryLog>, i64)> {
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM query_logs")
+    /// Query logs, newest first, filtered. No user identity is returned (only whether a guest asked).
+    pub async fn admin_list_query_logs(&self, f: &QueryLogFilter, limit: i64, offset: i64)
+        -> Result<(Vec<AdminQueryLog>, i64)>
+    {
+        let filter = "WHERE ($1 = '' OR outcome = $1)
+                        AND ($2 = '' OR ($2 = 'guest' AND user_id IS NULL) OR ($2 = 'user' AND user_id IS NOT NULL))
+                        AND ($3 <= 0 OR created_at >= NOW() - ($3::bigint * INTERVAL '1 day'))
+                        AND ($4 = '' OR query_text ILIKE '%' || $4 || '%')";
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM query_logs {filter}"))
+            .bind(&f.outcome).bind(&f.who).bind(f.days).bind(&f.search)
             .fetch_one(&self.pool).await?;
 
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT id, query_text, detected_language, num_results, search_time_ms,
-                    user_id, session_id, created_at::text, outcome
-             FROM query_logs
+                    user_id IS NULL AS guest, created_at::text, outcome,
+                    COUNT(*) OVER (PARTITION BY COALESCE(group_id, id)) AS similar
+             FROM query_logs {filter}
              ORDER BY created_at DESC
-             LIMIT $1 OFFSET $2"
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool).await?;
+             LIMIT $5 OFFSET $6"))
+            .bind(&f.outcome).bind(&f.who).bind(f.days).bind(&f.search)
+            .bind(limit).bind(offset)
+            .fetch_all(&self.pool).await?;
 
         let logs = rows.iter().map(|r| AdminQueryLog {
             id:               r.get("id"),
@@ -2139,10 +2243,10 @@ impl Database {
             detected_language: r.get("detected_language"),
             num_results:      r.get("num_results"),
             search_time_ms:   r.get("search_time_ms"),
-            user_id:          r.try_get("user_id").ok(),
-            session_id:       r.try_get("session_id").ok(),
+            guest:            r.get("guest"),
             created_at:       r.get("created_at"),
             outcome:          r.get("outcome"),
+            similar:          r.get("similar"),
         }).collect();
 
         Ok((logs, total))

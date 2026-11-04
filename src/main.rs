@@ -162,6 +162,23 @@ async fn main() -> std::io::Result<()> {
     // Background processing of web sources (Admin → Sources); PDFs go to the GitHub worker
     web_jobs::spawn(db.pool().clone());
 
+    // Query logs are kept QUERY_LOG_RETENTION_DAYS (default 180, 0 = forever); pruned daily
+    {
+        let db = db.clone();
+        let days: i64 = std::env::var("QUERY_LOG_RETENTION_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(180);
+        actix_web::rt::spawn(async move {
+            let mut every_day = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            loop {
+                every_day.tick().await;
+                match db.prune_query_logs(days).await {
+                    Ok(0) => {}
+                    Ok(n) => log::info!("[logs] removed {n} query logs older than {days} days"),
+                    Err(e) => log::warn!("[logs] pruning failed: {e}"),
+                }
+            }
+        });
+    }
+
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())

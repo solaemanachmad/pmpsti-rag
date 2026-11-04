@@ -1011,7 +1011,7 @@ pub async fn ask(
         let query = body.query.clone();
         let category = body.category_filter.clone().unwrap_or_default();
         let session_id = session_id.clone();
-        move |answer: String, shown: Vec<crate::db::SearchResult>, n_contexts: usize, top_score: f32| async move {
+        move |answer: String, shown: Vec<crate::db::SearchResult>, n_contexts: usize, top_score: f32, embedding: Option<Vec<f32>>| async move {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             let mut session = session;
             let now = Utc::now().to_rfc3339();
@@ -1036,7 +1036,7 @@ pub async fn ask(
             let _ = state.db.save_session(&session).await;
             let _ = state.db.log_query(
                 &query, "id", &category, n_contexts as i32, top_score, elapsed_ms as i64,
-                Some(&session_id), Some(uid), answer_outcome(&answer, n_contexts),
+                Some(&session_id), Some(uid), answer_outcome(&answer, n_contexts), embedding,
             ).await;
             serde_json::json!({ "session_id": session_id, "search_time_ms": elapsed_ms })
         }
@@ -1061,7 +1061,7 @@ pub async fn ask(
     let (answer, cited) = cited_sources(&answer, refs.len());
     let shown: Vec<crate::db::SearchResult> = cited.iter().map(|&i| found.contexts[i].clone()).collect();
     let sources = source_refs(&shown);
-    let meta = finish(answer.clone(), shown, refs.len(), found.top_score).await;
+    let meta = finish(answer.clone(), shown, refs.len(), found.top_score, found.embedding.clone()).await;
 
     HttpResponse::Ok().json(ApiSuccess::new(AskResponse {
         answer,
@@ -1076,6 +1076,8 @@ pub(crate) struct Retrieved {
     pub contexts:   Vec<crate::db::SearchResult>,
     pub query_type: crate::rag::QueryType,
     pub top_score:  f32,
+    /// the question's embedding (hybrid search), kept with its query log
+    pub embedding:  Option<Vec<f32>>,
 }
 
 /// Search → filter → merge per document with surrounding context. The question type
@@ -1095,12 +1097,12 @@ async fn retrieve(
         state.rag.search_chunks(query, category, search_mode, top_k),
         state.rag.classify_query(query),
     );
-    let all_chunks = all_chunks.map_err(|e| format!("Gagal mencari dokumen: {e}"))?;
+    let (all_chunks, embedding) = all_chunks.map_err(|e| format!("Gagal mencari dokumen: {e}"))?;
     let tuning = crate::settings::get();
     let hits = filter_sources(&all_chunks, query, tuning.min_score, 0.25, max_sources);
     let contexts = state.rag.build_context(&query_type, &hits).await;
     let top_score = all_chunks.first().map(|c| c.score as f32).unwrap_or(0.0);
-    Ok(Retrieved { contexts, query_type, top_score })
+    Ok(Retrieved { contexts, query_type, top_score, embedding })
 }
 
 fn source_refs(shown: &[crate::db::SearchResult]) -> Vec<SourceRef> {
@@ -1120,7 +1122,7 @@ fn source_refs(shown: &[crate::db::SearchResult]) -> Vec<SourceRef> {
 /// and `{"type":"status","stage":"writing"}` while it works (for the progress shown in the chat),
 /// `{"type":"delta","text":…}` while the LLM writes (citations already renumbered), then
 /// `{"type":"done","answer":…,"sources":[…], …fields from finish}` or `{"type":"error","error":…}`.
-/// `finish(answer, cited contexts, number of contexts, top score)` saves/logs and returns extra
+/// `finish(answer, cited contexts, number of contexts, top score, embedding)` saves/logs and returns extra
 /// fields for the done line.
 fn stream_answer<R, F, Fut>(
     state:     web::Data<AppState>,
@@ -1131,7 +1133,7 @@ fn stream_answer<R, F, Fut>(
 ) -> HttpResponse
 where
     R: std::future::Future<Output = Result<Retrieved, String>> + Send + 'static,
-    F: FnOnce(String, Vec<crate::db::SearchResult>, usize, f32) -> Fut + Send + 'static,
+    F: FnOnce(String, Vec<crate::db::SearchResult>, usize, f32, Option<Vec<f32>>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = serde_json::Value> + Send + 'static,
 {
     use tokio::io::AsyncWriteExt;
@@ -1199,7 +1201,7 @@ where
 
         let shown: Vec<crate::db::SearchResult> = cites.order().iter().map(|&i| found.contexts[i].clone()).collect();
         let sources = source_refs(&shown);
-        let mut done = finish(answer.clone(), shown, refs.len(), found.top_score).await;
+        let mut done = finish(answer.clone(), shown, refs.len(), found.top_score, found.embedding.clone()).await;
         if let Some(obj) = done.as_object_mut() {
             obj.insert("type".into(), "done".into());
             obj.insert("answer".into(), answer.into());
@@ -1269,12 +1271,12 @@ pub async fn ask_public(
     let finish = {
         let state = state.clone();
         let query = body.query.clone();
-        move |answer: String, _shown: Vec<crate::db::SearchResult>, n_contexts: usize, top_score: f32| async move {
+        move |answer: String, _shown: Vec<crate::db::SearchResult>, n_contexts: usize, top_score: f32, embedding: Option<Vec<f32>>| async move {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             let new_count = state.db.guest_increment(&guest_token).await;
             let _ = state.db.log_query(
                 &query, "id", "", n_contexts as i32, top_score, elapsed_ms as i64,
-                None, None, answer_outcome(&answer, n_contexts),
+                None, None, answer_outcome(&answer, n_contexts), embedding,
             ).await;
             serde_json::json!({
                 "search_time_ms": elapsed_ms,
@@ -1302,7 +1304,7 @@ pub async fn ask_public(
     let (answer, cited) = cited_sources(&answer, refs.len());
     let shown: Vec<crate::db::SearchResult> = cited.iter().map(|&i| found.contexts[i].clone()).collect();
     let sources = source_refs(&shown);
-    let mut res = finish(answer.clone(), shown, refs.len(), found.top_score).await;
+    let mut res = finish(answer.clone(), shown, refs.len(), found.top_score, found.embedding.clone()).await;
     if let Some(obj) = res.as_object_mut() {
         obj.insert("answer".into(), answer.into());
         obj.insert("sources".into(), serde_json::to_value(sources).unwrap_or_default());
@@ -2127,7 +2129,15 @@ pub async fn admin_query_logs(req: HttpRequest, state: web::Data<AppState>) -> H
     let limit:  i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).min(200);
     let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0).max(0);
 
-    match state.db.admin_list_query_logs(limit, offset).await {
+    let pick = |k: &str, allowed: &[&str]| query.get(k).map(|v| v.trim().to_string())
+        .filter(|v| allowed.contains(&v.as_str())).unwrap_or_default();
+    let filter = crate::db::QueryLogFilter {
+        outcome: pick("outcome", &["answered", "not_found", "no_sources"]),
+        who:     pick("who", &["guest", "user"]),
+        days:    query.get("days").and_then(|v| v.parse().ok()).unwrap_or(0).clamp(0, 3650),
+        search:  query.get("q").map(|v| v.trim().chars().take(100).collect()).unwrap_or_default(),
+    };
+    match state.db.admin_list_query_logs(&filter, limit, offset).await {
         Ok((logs, total)) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({
             "logs": logs,
             "total": total,
