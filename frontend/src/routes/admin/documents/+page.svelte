@@ -138,9 +138,17 @@
     return acc;
   }, []).map(g => ({ ...g, docs: [...g.docs].sort(byStatus) })).sort((a, b) => (a.key === 'manual' ? 1 : b.key === 'manual' ? -1 : a.title.localeCompare(b.title)));
   $: q = search.trim().toLowerCase();
-  /** '' = active and in review; 'all' adds archived */
-  let statusFilter: '' | 'active' | 'draft' | 'archived' | 'all' = '';
-  $: filtering = !!q || !!category || (statusFilter !== '' && statusFilter !== 'all');
+  /** Status tab. Active = what answers use (the default); drafts are reviewed in Sources. */
+  type StatusTab = 'active' | 'draft' | 'archived';
+  let statusFilter: StatusTab = 'active';
+  const STATUS_TABS: { key: StatusTab; label: string }[] = [
+    { key: 'active', label: 'Active' }, { key: 'draft', label: 'In review' }, { key: 'archived', label: 'Archived' }
+  ];
+  $: statusCounts = documents.reduce<Record<StatusTab, number>>((n, d) => {
+    n[(d.status ?? 'active') as StatusTab] += 1;
+    return n;
+  }, { active: 0, draft: 0, archived: 0 });
+  $: filtering = !!q || !!category || statusFilter !== 'active';
   const STATUS_ORDER: Record<string, number> = { draft: 0, active: 1, archived: 2 };
   function byStatus(a: AdminDocument, b: AdminDocument): number {
     return (STATUS_ORDER[a.status ?? 'active'] - STATUS_ORDER[b.status ?? 'active'])
@@ -169,11 +177,8 @@
     const date = own ? d.valid_from : d.source_valid_from;
     return [label, date].filter(Boolean).join(' · ');
   }
-  $: archivedCount = documents.filter(d => d.status === 'archived').length;
   $: filtered = documents.filter(d =>
-    (statusFilter === 'all' ? true
-      : statusFilter === '' ? d.status !== 'archived'
-      : (d.status ?? 'active') === statusFilter) &&
+    (d.status ?? 'active') === statusFilter &&
     (!category || d.category === category) &&
     (!q || [d.title, d.source_url, d.category, d.subcategory].some(v => v?.toLowerCase().includes(q)))
   );
@@ -247,28 +252,39 @@
       <option value="">All categories</option>
       {#each categories as c}<option value={c}>{c}</option>{/each}
     </select>
-    <select bind:value={statusFilter} class="input sm:w-48" aria-label="Filter by status">
-      <option value="">Active + in review</option>
-      <option value="active">Active only</option>
-      <option value="draft">In review</option>
-      <option value="archived">Archived ({archivedCount})</option>
-      <option value="all">All</option>
-    </select>
   </div>
 
-  {#if groups.length > 1 && !filtering}
-    <div class="flex justify-end gap-3 -mt-1 text-xs">
-      <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(true)}>Expand all</button>
-      <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(false)}>Collapse all</button>
+  <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+    <div role="tablist" aria-label="Document status" class="inline-flex rounded-lg border bg-muted/40 p-0.5">
+      {#each STATUS_TABS as t}
+        <button type="button" role="tab" aria-selected={statusFilter === t.key} on:click={() => (statusFilter = t.key)}
+          class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors
+                 {statusFilter === t.key ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}">
+          {t.label} <span class="ml-1 text-xs tabular-nums {statusFilter === t.key ? 'text-muted-foreground' : 'opacity-70'}">{statusCounts[t.key]}</span>
+        </button>
+      {/each}
     </div>
-  {/if}
+    <p class="text-xs text-muted-foreground">
+      {#if statusFilter === 'active'}Used in answers.
+      {:else if statusFilter === 'draft'}Not used in answers yet. <a href="/admin/sources" class="text-primary hover:underline">Review drafts in Sources</a>
+      {:else}Replaced by a newer version; kept for the record, not used in answers.{/if}
+    </p>
+    {#if groups.length > 1 && !filtering}
+      <div class="ml-auto flex gap-3 text-xs">
+        <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(true)}>Expand all</button>
+        <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(false)}>Collapse all</button>
+      </div>
+    {/if}
+  </div>
+
 
   {#if loading && documents.length === 0}
     <LoadingState />
   {:else if filtered.length === 0}
     <div class="card">
-      <EmptyState icon={FileText} title={documents.length ? 'No matching documents' : 'No documents yet'}
-        description={documents.length ? 'Try a different search or category.' : 'Add sources (web pages, PDFs, Drive) in Admin → Sources.'} />
+      <EmptyState icon={FileText} title={!documents.length ? 'No documents yet' : q || category ? 'No matching documents'
+          : statusFilter === 'draft' ? 'Nothing waiting for review' : statusFilter === 'archived' ? 'No archived documents' : 'No active documents'}
+        description={!documents.length ? 'Add sources (web pages, PDFs, Drive) in Admin → Sources.' : q || category ? 'Try a different search or category.' : ''} />
     </div>
   {:else}
     {#each groups as g (g.key)}
