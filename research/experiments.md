@@ -210,8 +210,17 @@ are true duplicates in the test sets (0.99 "rata-rata EWMP … berapa" vs "Berap
 Letter-trigram overlap separates typos better (typos ≥ 0.49; different questions p99 0.36) but also
 scores that pair 0.69. Rule adopted: group when embedding ≥ 0.80 AND trigram overlap ≥ 0.45
 (`src/db.rs` `similar_group`, env `SIMILAR_QUESTION_THRESHOLD` / `SIMILAR_QUESTION_MIN_OVERLAP`);
-the combined grid is printed by `question_similarity.py` and is to be confirmed by re-running it
-(cached, no quota).
+the combined grid is printed by `question_similarity.py` (`20261104-2254_similarity.json`):
+
+| embedding ≥ | overlap ≥ | typos grouped | different pairs merged |
+|---|---|---|---|
+| 0.80 | 0.45 | 92.8 % | 8 (0.28 %) |
+| 0.85 | 0.45 | 86.2 % | 8 |
+| 0.88 | 0.45 | 75.7 % | 5 |
+
+The script's automatic pick (0.88, ≤ 0.2 % merged) counts as errors the 3 pairs that are true duplicates
+in the test sets (EWMP, izin perkuliahan, tendik); without them 0.80 / 0.45 merges about 5 different pairs
+(0.18 %) while grouping 93 % of typos. Kept 0.80 / 0.45.
 
 ## Threats to validity (to address before publication)
 

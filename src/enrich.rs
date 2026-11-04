@@ -6,6 +6,10 @@
 use std::sync::OnceLock;
 
 /// Acronym → expansion, in file order. Keys starting with `_` are comments.
+pub fn acronym_list() -> &'static [(String, String)] {
+    acronyms()
+}
+
 fn acronyms() -> &'static [(String, String)] {
     static LIST: OnceLock<Vec<(String, String)>> = OnceLock::new();
     LIST.get_or_init(|| {

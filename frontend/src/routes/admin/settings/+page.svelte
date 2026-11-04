@@ -67,7 +67,8 @@
     !== JSON.stringify({ ...snap.settings, temperature: round(snap.settings.temperature), min_score: round(snap.settings.min_score) });
   const fieldLabel: Record<string, string> = {
     model: 'Model', fallback_models: 'Fallback models', temperature: 'Temperature', max_tokens: 'Max answer length',
-    candidates: 'Search candidates', max_sources: 'Max sources', min_score: 'Min score', all: 'All settings'
+    candidates: 'Search candidates', max_sources: 'Max sources', min_score: 'Min score',
+    expand_abbreviations: 'Expand abbreviations', all: 'All settings'
   };
   const providerLabel: Record<string, string> = { gemini: 'Google Gemini', 'openai-compatible': 'OpenAI-compatible', ollama: 'Ollama (local)' };
 </script>
@@ -158,6 +159,15 @@
             <p class="text-xs text-muted-foreground">Sources below this are dropped. Default {round(snap.defaults.min_score)}.</p>
           </div>
         </div>
+        <label class="flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" bind:checked={form.expand_abbreviations} class="mt-1 w-4 h-4 rounded accent-[hsl(var(--primary))]" />
+          <span>
+            <span class="text-sm font-medium">Expand abbreviations</span>
+            <span class="block text-xs text-muted-foreground">Search “kapan sempro” as “kapan sempro (seminar proposal)”, using the list in
+              <a href="/admin/abbreviations" class="text-primary hover:underline">Abbreviations</a>. The question and the answer are not changed.
+              Measure with <code>eval_retrieval.py --expand</code> before turning it on. Default off.</span>
+          </span>
+        </label>
       </section>
 
       <div class="flex flex-wrap items-center gap-2">

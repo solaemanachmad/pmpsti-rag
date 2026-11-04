@@ -27,6 +27,9 @@ pub struct Settings {
     /// Minimum relevance score for a source. Hybrid top-1 scores on the test set are 0.41–0.60
     /// (median 0.55), so the default 0.35 never drops a correct answer (scripts/eval_retrieval.py).
     pub min_score:       f64,
+    /// Search a question with its abbreviations explained ("sempro (seminar proposal)"),
+    /// from Admin → Abbreviations and src/acronyms.json. Off until measured (eval --expand).
+    pub expand_abbreviations: bool,
 }
 
 impl Default for Settings {
@@ -39,6 +42,7 @@ impl Default for Settings {
             candidates: 10,
             max_sources: 6,
             min_score: 0.35,
+            expand_abbreviations: false,
         }
     }
 }

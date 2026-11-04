@@ -700,6 +700,33 @@ export interface UnansweredQuestion {
   ids: number[];
 }
 
+// ── Abbreviations (Admin → Abbreviations) ──
+export interface AbbreviationEntry {
+  id: number;
+  short: string;
+  expansion: string;
+  /** active | ignored (not an abbreviation) */
+  status: 'active' | 'ignored';
+  updated_at: string;
+}
+export interface AbbreviationCandidate {
+  short: string;
+  times: number;
+  unanswered: number;
+  upper: boolean;
+  in_documents: boolean;
+  examples: string[];
+}
+export const abbreviations = {
+  list: () => request<{ entries: AbbreviationEntry[]; builtin: { short: string; expansion: string }[]; expand_enabled: boolean }>('/admin/abbreviations'),
+  candidates: (days = 90) => request<AbbreviationCandidate[]>(`/admin/abbreviations/candidates?days=${days}`),
+  save: (short: string, expansion: string) =>
+    request<{ id: number }>('/admin/abbreviations', { method: 'POST', body: JSON.stringify({ short, expansion }) }),
+  ignore: (short: string) =>
+    request<{ id: number }>('/admin/abbreviations', { method: 'POST', body: JSON.stringify({ short, status: 'ignored' }) }),
+  remove: (id: number) => request<{ deleted: number }>(`/admin/abbreviations/${id}`, { method: 'DELETE' })
+};
+
 // ── FAQ ──
 export const faq = {
   /** Public: ambil daftar pertanyaan FAQ (pinned + top queries) */
@@ -806,6 +833,8 @@ export interface AnswerSettings {
   candidates: number;
   max_sources: number;
   min_score: number;
+  /** search with abbreviations explained (Admin → Abbreviations) */
+  expand_abbreviations: boolean;
 }
 export interface SettingsSnapshot {
   settings: AnswerSettings;
