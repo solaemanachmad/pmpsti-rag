@@ -13,7 +13,7 @@ and prints, per threshold, how many typo variants would be grouped correctly and
 different questions would wrongly be merged, plus a suggested threshold.
 
 Uses the same embeddings as the backend (gemini-embedding-001, RETRIEVAL_QUERY, 768 dims) and
-the same cache as eval_retrieval.py (eval/.cache/query_embeddings.json), so a re-run is free.
+the same cache as eval_retrieval.py (scripts/eval/.cache/query_embeddings.json), so a re-run is free.
 First run: about 230 embeddings (5 batch calls). Needs GEMINI_API_KEY (.env in the repo root).
 No database access.
 
@@ -37,11 +37,13 @@ SCRIPTS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
 from gemini_embed import GeminiEmbeddings  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from typos import SEED, typo_variants  # noqa: E402
+
 ROOT = SCRIPTS.parent
-CACHE_FILE = ROOT / "eval" / ".cache" / "query_embeddings.json"
+CACHE_FILE = SCRIPTS / "eval" / ".cache" / "query_embeddings.json"  # shared with eval_retrieval.py
 RESULTS = SCRIPTS / "eval" / "results"
 THRESHOLDS = [0.80, 0.82, 0.84, 0.86, 0.88, 0.90, 0.92, 0.94, 0.96]
-VOWELS = "aiueo"
 
 
 def test_questions() -> list[str]:
@@ -57,40 +59,6 @@ def test_questions() -> list[str]:
     return out
 
 
-def typo_variants(q: str, rng: random.Random) -> list[str]:
-    """Two misspellings the way people type fast: lower case, no '?', dropped vowels or letters,
-    swapped neighbours. Words of 1–3 letters and acronyms in the middle stay readable."""
-    base = re.sub(r"[?!.]+$", "", q.strip()).lower()
-    words = base.split()
-    long_idx = [i for i, w in enumerate(words) if len(w) >= 5 and w.isalpha()]
-    if not long_idx:
-        return [base]
-
-    def drop_vowel(w: str) -> str:
-        pos = [i for i, c in enumerate(w) if c in VOWELS and 0 < i < len(w) - 1]
-        if not pos:
-            return w
-        i = rng.choice(pos)
-        return w[:i] + w[i + 1:]
-
-    def swap(w: str) -> str:
-        i = rng.randrange(1, len(w) - 2)
-        return w[:i] + w[i + 1] + w[i] + w[i + 2:]
-
-    v1 = list(words)
-    for i in rng.sample(long_idx, min(2, len(long_idx))):
-        v1[i] = drop_vowel(v1[i])
-    v2 = list(words)
-    picks = rng.sample(long_idx, min(2, len(long_idx)))
-    v2[picks[0]] = swap(v2[picks[0]])
-    if len(picks) > 1:
-        w = v2[picks[1]]
-        v2[picks[1]] = w[:-1] if len(w) > 5 else w
-    if len(v2) > 2 and v2[0] in ("apa", "apakah", "berapa", "bagaimana", "siapa"):
-        v2[0] = {"apa": "ap", "apakah": "apakh", "berapa": "brp", "bagaimana": "gmn", "siapa": "siapa"}[v2[0]]
-    return [" ".join(v1), " ".join(v2)]
-
-
 def embed_all(texts: list[str]) -> dict[str, list[float]]:
     try:
         cache = json.loads(CACHE_FILE.read_text())
@@ -101,11 +69,29 @@ def embed_all(texts: list[str]) -> dict[str, list[float]]:
     if missing:
         print(f"Embedding {len(missing)} new texts (Gemini RETRIEVAL_QUERY)...")
         model = GeminiEmbeddings(task_type="RETRIEVAL_QUERY")
-        for t, v in zip(missing, model.embed(missing, "RETRIEVAL_QUERY")):
-            cache[key(t)] = v
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(json.dumps(cache))
+        step = 25  # saved after every step, so an interrupted run keeps what it already paid for
+        for i in range(0, len(missing), step):
+            part = missing[i:i + step]
+            print(f"  {i + len(part)}/{len(missing)}", flush=True)
+            for t, v in zip(part, model.embed(part, "RETRIEVAL_QUERY")):
+                cache[key(t)] = v
+            CACHE_FILE.write_text(json.dumps(cache))
     return {t: cache[key(t)] for t in texts}
+
+
+def trigrams(t: str) -> set[str]:
+    """Letter trigrams per word, padded like pg_trgm — same as trigram_similarity in src/db.rs."""
+    out = set()
+    for w in re.findall(r"[0-9a-z]+", t.lower()):
+        w = f"  {w} "
+        out |= {w[i:i + 3] for i in range(len(w) - 2)}
+    return out
+
+
+def overlap(a: str, b: str) -> float:
+    x, y = trigrams(a), trigrams(b)
+    return len(x & y) / len(x | y) if x | y else 0.0
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -123,7 +109,7 @@ def main() -> None:
     ap.add_argument("--save", action="store_true", help="write the numbers to eval/results/")
     args = ap.parse_args()
 
-    rng = random.Random(20261104)
+    rng = random.Random(SEED)
     questions = test_questions()
     variants = {q: typo_variants(q, rng) for q in questions}
     vec = embed_all(questions + [v for vs in variants.values() for v in vs])
@@ -147,9 +133,29 @@ def main() -> None:
         print(f"  {t:.2f}        {ok:6.1%}          {bad:4d}  ({bad / len(diff):.2%})")
 
     # Highest threshold that still groups 95% of typos; then check it merges almost nothing else
-    good = [r for r in rows if r["typos_grouped"] >= 0.95]
-    suggestion = max(good, key=lambda r: r["threshold"])["threshold"] if good else None
-    print(f"\nSuggested SIMILAR_QUESTION_THRESHOLD: {suggestion if suggestion else 'none groups 95% of typos'}")
+    # The backend groups when BOTH hold: embedding ≥ SIMILAR_QUESTION_THRESHOLD and trigram
+    # overlap ≥ SIMILAR_QUESTION_MIN_OVERLAP. Grid of both:
+    same2 = [(q, v, s, overlap(q, v)) for q, v, s in same]
+    diff2 = [(a, b, s, overlap(a, b)) for a, b, s in diff]
+    print("\nembedding  + overlap   typos grouped   different questions merged")
+    grid = []
+    for t in [0.75, 0.78, 0.80, 0.82, 0.85, 0.88]:
+        for o in [0.35, 0.40, 0.45, 0.50]:
+            ok = sum(s >= t and x >= o for *_, s, x in same2) / len(same2)
+            bad = sum(s >= t and x >= o for *_, s, x in diff2)
+            grid.append({"threshold": t, "min_overlap": o, "typos_grouped": round(ok, 4), "different_merged": bad})
+            print(f"  {t:.2f}     {o:.2f}       {ok:6.1%}          {bad:4d}  ({bad / len(diff2):.2%})")
+    # most typos grouped while merging at most 0.2% of different pairs
+    fine = [g for g in grid if g["different_merged"] <= 0.002 * len(diff2)]
+    best = max(fine, key=lambda g: (g["typos_grouped"], g["threshold"])) if fine else None
+    suggestion = best and {"SIMILAR_QUESTION_THRESHOLD": best["threshold"], "SIMILAR_QUESTION_MIN_OVERLAP": best["min_overlap"]}
+    print(f"\nSuggested: {suggestion or 'no setting merges ≤ 0.2% of different questions'}"
+          + (f" — groups {best['typos_grouped']:.0%} of typos, merges {best['different_merged']} different pairs" if best else ""))
+    if best:
+        print("Different questions merged at that setting (check by hand; true duplicates are fine):")
+        for a, b, s, x in sorted(diff2, key=lambda d: -d[2]):
+            if s >= best["threshold"] and x >= best["min_overlap"]:
+                print(f"  emb {s:.3f}  overlap {x:.2f}  {a}  |  {b}")
 
     print("\nMost similar DIFFERENT questions (check by hand: true duplicates in the test sets are fine):")
     for a, b, s in sorted(diff, key=lambda x: -x[2])[:10]:
@@ -164,7 +170,7 @@ def main() -> None:
         out.write_text(json.dumps({
             "model": "gemini-embedding-001 / RETRIEVAL_QUERY / 768",
             "questions": len(questions), "typo_pairs": len(same), "different_pairs": len(diff),
-            "thresholds": rows, "suggested": suggestion,
+            "thresholds": rows, "grid": grid, "suggested": suggestion,
             "lowest_typo_pairs": [{"q": q, "variant": v, "sim": round(s, 4)} for q, v, s in sorted(same, key=lambda x: x[2])[:20]],
             "highest_different_pairs": [{"a": a, "b": b, "sim": round(s, 4)} for a, b, s in sorted(diff, key=lambda x: -x[2])[:20]],
         }, ensure_ascii=False, indent=1))

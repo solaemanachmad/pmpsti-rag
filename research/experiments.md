@@ -170,6 +170,49 @@ generation calls, so ~6 runs per day fit in the free tier.
 
 ---
 
+## E10 — Misspelled questions: retrieval and grouping similar questions · 2026-11-04 · branch `feat/typo-eval` (`2eb39a2`)
+
+`20261104-2208_typos.json` (retrieval), `*_similarity.json` (grouping). Snapshot `eval-snapshot-2026-10-17`
+(343 chunks, fingerprint `cac776475ebf`). Two misspelled versions of every test question from
+`scripts/eval/typos.py` (lower case, dropped vowels/letters, swapped neighbours, "brp"/"gmn"; fixed seed).
+Retrieval only — embeddings for the variants, no LLM calls.
+
+**Retrieval** (42 document questions, 24 answer questions):
+
+| Mode | Questions | doc hit@1 | doc hit@5 | MRR | ans@5 |
+|---|---|---|---|---|---|
+| hybrid (chat default) | as written | 90 % | 98 % | 0.93 | 88 % |
+| hybrid | typo 1 | 88 % | 95 % | 0.91 | 79 % |
+| hybrid | typo 2 | 88 % | 98 % | 0.92 | 79 % |
+| semantic | as written / typo 1 / typo 2 | 88 / 88 / 90 % | 98 / 95 / 98 % | 0.92 / 0.92 / 0.93 | 83 / 79 / 79 % |
+| keyword | as written / typo 1 / typo 2 | 60 / 50 / 48 % | 83 / 81 / 83 % | 0.69 / 0.60 / 0.62 | 54 / 54 / 54 % |
+
+Lost by typos in hybrid (top 5 as written, not with the typo): 5 of 132 variant checks — `curr-profile`
+("apa prfil llusan pmpsti"), Q13 (both variants), Q14, Q32.
+
+Finding: retrieval is robust to typos. doc hit@5 drops at most 3 points; ans@5 drops 9 points = 2 of 24
+questions. The embedding carries the hybrid score; the keyword part loses up to 12 points of hit@1 but
+weighs only 0.3. Decision: no change to retrieval now (threshold set beforehand: act only if hit@5
+drops ≥ 5 points). If needed later: a typo-tolerant keyword part (pg_trgm) — must be re-measured.
+
+**Grouping similar questions** (Query Logs, Unanswered, FAQ): 76 questions, 152 typo variants, 2,850 pairs
+of different questions.
+
+| | min | p5 | median | p95 | p99 | max |
+|---|---|---|---|---|---|---|
+| embedding cosine, typo vs original | 0.670 | 0.778 | 0.950 | | | |
+| embedding cosine, different questions | | | | 0.752 | 0.843 | 0.992 |
+
+Embeddings alone cannot separate the two: at 0.90 (the first default) only 70 % of typo variants
+are grouped while 8 pairs merge; at 0.80, 93 % are grouped but 59 pairs merge. Some "different" pairs
+are true duplicates in the test sets (0.99 "rata-rata EWMP … berapa" vs "Berapa rata-rata EWMP …"), but
+"jumlah tenaga kependidikan" vs "jumlah dosen (tenaga pendidik)" (0.955) is a real wrong merge.
+Letter-trigram overlap separates typos better (typos ≥ 0.49; different questions p99 0.36) but also
+scores that pair 0.69. Rule adopted: group when embedding ≥ 0.80 AND trigram overlap ≥ 0.45
+(`src/db.rs` `similar_group`, env `SIMILAR_QUESTION_THRESHOLD` / `SIMILAR_QUESTION_MIN_OVERLAP`);
+the combined grid is printed by `question_similarity.py` and is to be confirmed by re-running it
+(cached, no quota).
+
 ## Threats to validity (to address before publication)
 
 - **Small test sets** (23 e2e / 42 document questions), written by the system's author; no

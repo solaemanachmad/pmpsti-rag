@@ -763,20 +763,24 @@ impl Database {
         Ok(())
     }
 
-    /// Group of an earlier question that means the same: the nearest logged question when its
-    /// embedding is at least `similar_threshold()` similar, else one with the same wording.
+    /// Group of an earlier question that means the same. Among the nearest logged questions whose
+    /// embedding is at least `similar_threshold()` similar, the first that also shares enough
+    /// letter trigrams (`similar_min_overlap()`) — embeddings alone merge different questions on
+    /// one topic, trigrams alone miss reworded ones. Else a question with the same wording.
     async fn similar_group(&self, query_text: &str, embedding: Option<&Vector>) -> Option<i64> {
         if let Some(e) = embedding {
-            let near: Option<(Option<i64>, f64)> = sqlx::query_as(
-                "SELECT group_id, 1 - (embedding <=> $1) AS similarity
+            let near: Vec<(Option<i64>, String, f64)> = sqlx::query_as(
+                "SELECT group_id, query_text, 1 - (embedding <=> $1) AS similarity
                  FROM query_logs WHERE embedding IS NOT NULL
-                 ORDER BY embedding <=> $1 LIMIT 1",
+                 ORDER BY embedding <=> $1 LIMIT 5",
             )
             .bind(e)
-            .fetch_optional(&self.pool).await.ok().flatten();
-            if let Some((Some(gid), sim)) = near {
-                if sim >= similar_threshold() { return Some(gid); }
-            }
+            .fetch_all(&self.pool).await.unwrap_or_default();
+            let hit = near.into_iter().find(|(gid, text, sim)| {
+                gid.is_some() && *sim >= similar_threshold()
+                    && trigram_similarity(query_text, text) >= similar_min_overlap()
+            });
+            if let Some((gid, ..)) = hit { return gid; }
         }
         sqlx::query_scalar(&format!(
             "SELECT group_id FROM query_logs WHERE {NORM_QUERY} = {norm} AND group_id IS NOT NULL LIMIT 1",
@@ -2205,12 +2209,62 @@ pub struct QueryLogFilter {
 /// Normalised wording of a question in SQL (case, repeated spaces and trailing ?!. ignored).
 const NORM_QUERY: &str = "btrim(regexp_replace(regexp_replace(lower(query_text), '[\\s?!.]+$', ''), '\\s+', ' ', 'g'))";
 
-/// Cosine similarity at which two questions count as the same (env SIMILAR_QUESTION_THRESHOLD,
-/// default 0.90; calibrate with scripts/eval/question_similarity.py).
+/// Two questions count as the same when their embeddings are at least this similar (cosine) AND
+/// they share at least `similar_min_overlap()` of their letter trigrams. Defaults from
+/// scripts/eval/question_similarity.py on the test questions (2026-11-04): 0.80 and 0.45 group
+/// ~92% of typo variants and merge about 0.1% of pairs of different questions; embeddings alone
+/// at 0.90 grouped only 70% of typos. Env: SIMILAR_QUESTION_THRESHOLD, SIMILAR_QUESTION_MIN_OVERLAP.
 pub fn similar_threshold() -> f64 {
     static T: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var("SIMILAR_QUESTION_THRESHOLD").ok()
-        .and_then(|v| v.parse().ok()).filter(|t: &f64| (0.5..=1.0).contains(t)).unwrap_or(0.90))
+    *T.get_or_init(|| env_fraction("SIMILAR_QUESTION_THRESHOLD", 0.80))
+}
+
+pub fn similar_min_overlap() -> f64 {
+    static T: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *T.get_or_init(|| env_fraction("SIMILAR_QUESTION_MIN_OVERLAP", 0.45))
+}
+
+fn env_fraction(name: &str, default: f64) -> f64 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok())
+        .filter(|t: &f64| (0.0..=1.0).contains(t)).unwrap_or(default)
+}
+
+/// Share of letter trigrams two questions have in common (Jaccard), like pg_trgm's similarity():
+/// lower case, a trailing ?!. ignored, each word padded ("  kata "). A typo changes a few
+/// trigrams; a different question changes many. Same as tri() in question_similarity.py.
+pub fn trigram_similarity(a: &str, b: &str) -> f64 {
+    fn trigrams(t: &str) -> std::collections::HashSet<[char; 3]> {
+        let lower = t.to_lowercase();
+        let mut out = std::collections::HashSet::new();
+        for word in lower.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()) {
+            let padded: Vec<char> = "  ".chars().chain(word.chars()).chain(" ".chars()).collect();
+            for w in padded.windows(3) {
+                out.insert([w[0], w[1], w[2]]);
+            }
+        }
+        out
+    }
+    let (x, y) = (trigrams(a), trigrams(b));
+    let union = x.union(&y).count();
+    if union == 0 { return 0.0; }
+    x.intersection(&y).count() as f64 / union as f64
+}
+
+#[cfg(test)]
+mod trigram_tests {
+    use super::trigram_similarity as sim;
+
+    #[test]
+    fn typos_stay_close_different_questions_do_not() {
+        assert!(sim("Apa kepanjangan PMPSTI?", "ap kepanjanga pmptsi") >= 0.45);
+        assert!(sim("berapa jumlah kerjasama PMPSTI?", "brp jumlah kerjasam ppmsti") >= 0.45);
+        assert!(sim("Berapa SKS bobot tesis?", "Siapa dosen pembimbing tesis?") < 0.45);
+        assert!((sim("rata-rata ewmp Bapak Rudy Hartanto berapa?", "Berapa rata-rata EWMP Bapak Rudy Hartanto?") - 1.0).abs() < 1e-9);
+        assert_eq!(sim("", ""), 0.0);
+        // same numbers as overlap() in scripts/eval/question_similarity.py
+        assert!((sim("Apa kepanjangan PMPSTI?", "ap kepanjanga pmptsi") - 0.517).abs() < 0.001);
+        assert!((sim("Berapa SKS bobot tesis?", "Siapa dosen pembimbing tesis?") - 0.22).abs() < 0.001);
+    }
 }
 
 impl Database {

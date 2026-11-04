@@ -27,6 +27,8 @@ BATCH_URL = (
 BATCH_SIZE = int(os.environ.get("EMBED_BATCH_SIZE", "50"))
 BATCH_DELAY_S = float(os.environ.get("EMBED_BATCH_DELAY_S", "2"))
 MAX_RETRIES = 6
+# Seconds to wait for one batch; a slow or stuck request is retried instead of hanging.
+REQUEST_TIMEOUT_S = float(os.environ.get("EMBED_TIMEOUT_S", "45"))
 
 
 def _load_dotenv():
@@ -78,12 +80,19 @@ class GeminiEmbeddings:
             reqs.append(r)
 
         for attempt in range(MAX_RETRIES):
-            resp = self.session.post(
-                BATCH_URL,
-                headers={"x-goog-api-key": self.api_key},
-                json={"requests": reqs},
-                timeout=120,
-            )
+            try:
+                resp = self.session.post(
+                    BATCH_URL,
+                    headers={"x-goog-api-key": self.api_key},
+                    json={"requests": reqs},
+                    timeout=(10, REQUEST_TIMEOUT_S),
+                )
+            except (requests.Timeout, requests.ConnectionError) as e:
+                wait = min(60, 5 * 2 ** attempt)
+                print(f"    [gemini] no answer ({type(e).__name__}), retrying in {wait}s "
+                      f"(attempt {attempt + 1}/{MAX_RETRIES})", flush=True)
+                time.sleep(wait)
+                continue
             if resp.status_code in (429, 500, 503):
                 wait = min(60, 5 * 2 ** attempt)
                 print(f"    [gemini] HTTP {resp.status_code}, tunggu {wait}s "
@@ -103,9 +112,12 @@ class GeminiEmbeddings:
               titles: list[str] | None = None) -> list[list[float]]:
         task_type = task_type or self.task_type
         out: list[list[float]] = []
+        batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
         for i in range(0, len(texts), BATCH_SIZE):
             if i > 0:
                 time.sleep(BATCH_DELAY_S)
+            if batches > 1:
+                print(f"    [gemini] batch {i // BATCH_SIZE + 1}/{batches}", flush=True)
             out.extend(self._batch(
                 texts[i:i + BATCH_SIZE], task_type,
                 titles[i:i + BATCH_SIZE] if titles else None,
