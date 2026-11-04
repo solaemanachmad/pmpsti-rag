@@ -151,6 +151,19 @@ export const admin = {
   /** Topic categories (two levels, parents first) and how many documents are uncategorized. */
   categories: () =>
     request<CategoryList>('/admin/categories'),
+  /** Add a category; parent_id null = top level. */
+  createCategory: (name: string, parent_id: number | null) =>
+    request<{ id: number }>('/admin/categories', { method: 'POST', body: JSON.stringify({ name, parent_id }) }),
+  /** Rename only; the slug stays. */
+  renameCategory: (id: number, name: string) =>
+    request<{ renamed: boolean }>(`/admin/categories/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  /** New order of all siblings under parent_id (null = top level). */
+  reorderCategories: (parent_id: number | null, ids: number[]) =>
+    request<{ reordered: boolean }>('/admin/categories/order', { method: 'PUT', body: JSON.stringify({ parent_id, ids }) }),
+  /** Delete a category without subcategories; its documents move to move_to, or become uncategorized. */
+  deleteCategory: (id: number, move_to: number | null) =>
+    request<{ moved_documents: number }>(
+      `/admin/categories/${id}${move_to != null ? `?move_to=${move_to}` : ''}`, { method: 'DELETE' }),
   /** File a document under a category; null = uncategorized. */
   setDocumentCategory: (document_id: string, category_id: number | null) =>
     request<{ updated_chunks: number }>(
