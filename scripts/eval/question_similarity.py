@@ -13,7 +13,7 @@ and prints, per threshold, how many typo variants would be grouped correctly and
 different questions would wrongly be merged, plus a suggested threshold.
 
 Uses the same embeddings as the backend (gemini-embedding-001, RETRIEVAL_QUERY, 768 dims) and
-the same cache as eval_retrieval.py (eval/.cache/query_embeddings.json), so a re-run is free.
+the same cache as eval_retrieval.py (scripts/eval/.cache/query_embeddings.json), so a re-run is free.
 First run: about 230 embeddings (5 batch calls). Needs GEMINI_API_KEY (.env in the repo root).
 No database access.
 
@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from typos import SEED, typo_variants  # noqa: E402
 
 ROOT = SCRIPTS.parent
-CACHE_FILE = ROOT / "eval" / ".cache" / "query_embeddings.json"
+CACHE_FILE = SCRIPTS / "eval" / ".cache" / "query_embeddings.json"  # shared with eval_retrieval.py
 RESULTS = SCRIPTS / "eval" / "results"
 THRESHOLDS = [0.80, 0.82, 0.84, 0.86, 0.88, 0.90, 0.92, 0.94, 0.96]
 
