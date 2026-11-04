@@ -11,7 +11,8 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import CategoryTree from '$lib/components/admin/CategoryTree.svelte';
   import type { CategoryNode } from '$lib/components/admin/CategoryTree.svelte';
-  import { Loader2, Trash2, RefreshCw, ChevronDown, Pencil, Search, FileText, ExternalLink, Layers, FolderSync, Network, Folder, FolderInput, Tag } from 'lucide-svelte';
+  import { Loader2, Trash2, RefreshCw, ChevronDown, Pencil, Search, FileText, ExternalLink, Layers, FolderSync, Network, Folder, FolderInput, Tag, User } from 'lucide-svelte';
+  import { personFromTitle, personKey } from '$lib/people';
 
   let documents: AdminDocument[] = [];
   let loading = false;
@@ -54,9 +55,10 @@
   function saveOpen() {
     try { localStorage.setItem(OPEN_KEY, JSON.stringify(openGroups)); } catch { /* storage unavailable */ }
   }
-  /** Small groups and groups with drafts start open; a search or filter opens every match. */
+  /** Small groups and groups with drafts start open; a search or filter opens every match.
+   *  Person groups inside a category can still be folded (unless a search is typed). */
   function isOpen(g: DocGroup, openGroups: Record<string, boolean>, filtering: boolean): boolean {
-    if (filtering || g.key === FLAT) return true;
+    if (g.key === FLAT || (filtering && !(isPersonGroup(g) && !q))) return true;
     return openGroups[g.key] ?? (g.docs.length <= 5 || reviewCount(g) > 0);
   }
   function toggleGroup(g: DocGroup) {
@@ -65,7 +67,7 @@
     saveOpen();
   }
   function setAll(open: boolean) {
-    openGroups = Object.fromEntries(groups.map(g => [g.key, open]));
+    openGroups = { ...openGroups, ...Object.fromEntries(groups.map(g => [g.key, open])) };
     saveOpen();
   }
 
@@ -265,11 +267,33 @@
 
   // One group per source (a website with its pages, a Drive folder with its PDFs);
   // documents added before sources existed are grouped as "Added manually".
-  // With a category selected the list is flat (one pseudo-group, sorted by title).
+  // With a category selected the list is flat (one pseudo-group, sorted by title), or, when some
+  // titles name a person ("Dosen — Sunu Wibirama — Penelitian"), one group per person.
   interface DocGroup { key: string; title: string; kind: string; root: string; docs: AdminDocument[] }
   const FLAT = 'flat';
+  const PERSON = 'person-';
+  const PERSON_OTHER = 'person-~other';
+  const isPersonGroup = (g: DocGroup) => g.key.startsWith(PERSON);
+  /** One group per person named in the titles, sorted by name; the rest last. Null if no title names one. */
+  function personGroups(docs: AdminDocument[]): DocGroup[] | null {
+    const byPerson = new Map<string, DocGroup>();
+    const other: AdminDocument[] = [];
+    for (const d of docs) {
+      const name = personFromTitle(d.title);
+      if (!name) { other.push(d); continue; }
+      const key = PERSON + personKey(name);
+      if (!byPerson.has(key)) byPerson.set(key, { key, title: name, kind: 'person', root: '', docs: [] });
+      byPerson.get(key)!.docs.push(d);
+    }
+    if (!byPerson.size) return null;
+    const out = [...byPerson.values()].sort((a, b) => a.title.localeCompare(b.title, 'id'));
+    if (other.length) out.push({ key: PERSON_OTHER, title: 'Other documents', kind: 'person', root: '', docs: other });
+    return out.map(g => ({ ...g, docs: [...g.docs].sort(byStatus) }));
+  }
   $: groups = selectedCat
-    ? (filtered.length ? [{ key: FLAT, title: selectedLabel, kind: '', root: '', docs: [...filtered].sort(byStatus) }] : [])
+    ? (filtered.length
+        ? personGroups(filtered) ?? [{ key: FLAT, title: selectedLabel, kind: '', root: '', docs: [...filtered].sort(byStatus) }]
+        : [])
     : filtered.reduce<DocGroup[]>((acc, d) => {
     const key = d.source_id ? `src-${d.source_id}` : 'manual';
     let g = acc.find(x => x.key === key);
@@ -461,7 +485,7 @@
           {#if selectedCat}
             <span class="text-muted-foreground">{selectedLabel}</span>
           {/if}
-          {#if groups.length > 1 && !filtering}
+          {#if groups.length > 1 && (!filtering || (groups.some(isPersonGroup) && !q))}
             <div class="ml-auto flex gap-3">
               <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(true)}>Expand all</button>
               <button type="button" class="text-muted-foreground hover:text-foreground" on:click={() => setAll(false)}>Collapse all</button>
@@ -501,10 +525,10 @@
             <button type="button" on:click={() => toggleGroup(g)} aria-expanded={gOpen}
               class="flex-1 min-w-0 flex items-center gap-2 text-left">
               <ChevronDown size={16} class="shrink-0 text-muted-foreground transition-transform {gOpen ? '' : '-rotate-90'}" />
-              <svelte:component this={g.kind === 'web_site' ? Network : g.key === 'manual' ? FileText : FolderSync} size={15} class="text-muted-foreground shrink-0" />
+              <svelte:component this={g.kind === 'person' ? (g.key === PERSON_OTHER ? FileText : User) : g.kind === 'web_site' ? Network : g.key === 'manual' ? FileText : FolderSync} size={15} class="text-muted-foreground shrink-0" />
               <span class="text-sm font-semibold truncate">{g.title}</span>
               <span class="flex flex-wrap items-center gap-1.5 shrink-0">
-                <span class="badge-neutral">{liveCount(g)} {g.kind === 'web_site' ? (liveCount(g) === 1 ? 'page' : 'pages') : liveCount(g) === 1 ? 'document' : 'documents'}</span>
+                <span class="badge-neutral">{liveCount(g)} {g.kind === 'web_site' || g.kind === 'person' ? (liveCount(g) === 1 ? 'page' : 'pages') : liveCount(g) === 1 ? 'document' : 'documents'}</span>
                 {#if reviewCount(g)}<span class="badge-primary">{reviewCount(g)} in review</span>{/if}
                 {#if archivedIn(g)}<span class="badge-neutral hidden sm:inline-flex">{archivedIn(g)} archived</span>{/if}
                 {#if gVersion}<span class="badge-neutral hidden md:inline-flex" title="Version used when sources disagree">{gVersion}</span>{/if}
