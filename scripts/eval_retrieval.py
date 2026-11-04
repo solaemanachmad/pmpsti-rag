@@ -14,6 +14,7 @@ Change the m_* functions here together with the backend so results stay comparab
     python eval_retrieval.py --compare eval/results/<file>.json
     python eval_retrieval.py --verbose           # per-question details
     python eval_retrieval.py --backend http://localhost:8080   # + end-to-end answer check
+    python eval_retrieval.py --typos --label typos   # same questions with typos (eval/typos.py)
 
 Metrics:
   doc hit@1 / hit@5 / MRR  : right document at rank 1 / in the top 5 (out of 10 results)
@@ -23,6 +24,10 @@ Metrics:
                              Uses LLM quota (about 3 Gemini calls per question; the free tier
                              allows 500 per day). Request errors are excluded from the score.
 Questions whose source is not ingested yet, or is out of scope, are counted separately.
+
+--typos scores every question three times: as written and in two misspelled versions (lower
+case, dropped vowels/letters, swapped letters, "brp"/"gmn"), and lists the questions that
+typos push out of the top 5. Retrieval only: embeddings for the variants, no LLM calls.
 
 The database comes from DATABASE_URL (root .env) and is opened READ-ONLY.
 Question embeddings are cached in eval/.cache/ so later runs use no embedding quota.
@@ -45,6 +50,9 @@ import psycopg2
 import requests
 
 from gemini_embed import DIM as EMBED_DIM, MODEL as EMBED_MODEL, GeminiEmbeddings  # also loads .env
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "eval"))
+from typos import SEED as TYPO_SEED, typo_variants  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 EVAL_DIR = HERE / "eval"
@@ -288,20 +296,32 @@ def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default=os.environ.get("DATABASE_URL"))
+    ap.add_argument("--db", default=os.environ.get("DATABASE_URL"),
+                    help="database URL, or the name of a .env variable holding it (e.g. SNAPSHOT_DATABASE_URL)")
     ap.add_argument("--label", default="run")
     ap.add_argument("--modes", default=",".join(MODES))
     ap.add_argument("--compare", help="Earlier results file to compare against")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--backend", help="Backend URL for the end-to-end check, e.g. http://localhost:8080")
+    ap.add_argument("--typos", action="store_true",
+                    help="Also score two misspelled versions of every question (retrieval only)")
     args = ap.parse_args()
+    if args.typos and args.backend:
+        sys.exit("--typos measures retrieval only; run --backend separately.")
+    # --db SNAPSHOT_DATABASE_URL: the name of a variable from .env instead of the URL itself
+    if args.db and re.fullmatch(r"[A-Z][A-Z0-9_]*", args.db):
+        args.db = os.environ.get(args.db) or sys.exit(f"{args.db} is not set (.env).")
     if not args.db:
         sys.exit("DATABASE_URL is not set.")
     modes = [m.strip() for m in args.modes.split(",")]
 
     doc_qs = json.loads(DOC_SET.read_text())["questions"]
     ans_qs, ans_skipped = load_answer_set()
-    vectors = embed_questions([q["q"] for q in doc_qs] + [r["pertanyaan"] for r in ans_qs])
+    originals = [q["q"] for q in doc_qs] + [r["pertanyaan"] for r in ans_qs]
+    # variant 0 = as written; --typos adds 1 and 2 (same misspellings on every run)
+    rng = __import__("random").Random(TYPO_SEED)
+    spelled = {q: [q] + (typo_variants(q, rng) + [q])[:2] if args.typos else [q] for q in originals}
+    vectors = embed_questions(sorted({t for ts in spelled.values() for t in ts}))
 
     conn = psycopg2.connect(args.db)
     conn.set_session(readonly=True)
@@ -312,23 +332,39 @@ def main() -> None:
     host = args.db.split("@")[-1].split("/")[0]
     meta = run_metadata(cur, args)
 
+    n_spell = len(next(iter(spelled.values()), [None]))
+
     # Set 1 — documents
     doc_results = []
     for q in doc_qs:
         expect = {normalise(e) for e in q["expect"]}
-        ranks = {m: first_hit_rank(MODES[m](cur, q["q"], vectors[q["q"]], TOP_K), expect) for m in modes}
+        texts = spelled[q["q"]]
+        per = [{m: first_hit_rank(MODES[m](cur, t, vectors[t], TOP_K), expect) for m in modes} for t in texts]
         doc_results.append({"id": q["id"], "q": q["q"], "type": q["type"],
-                            "ingested": bool(expect & present), "ranks": ranks})
+                            "ingested": bool(expect & present), "ranks": per[0],
+                            **({"typos": [{"q": t, "ranks": r} for t, r in zip(texts[1:], per[1:])]} if args.typos else {})})
     scored = [p for p in doc_results if p["ingested"]]
     doc_summary = {m: summarise([p["ranks"][m] for p in scored]) for m in modes}
 
     # Set 2 — answers
     ans_results = []
     for r in ans_qs:
-        q = r["pertanyaan"]
-        found = {m: answer_found(MODES[m](cur, q, vectors[q], ANSWER_K), r["kata_kunci"]) for m in modes}
-        ans_results.append({"id": r["id"], "q": q, "type": r["jenis"], "found": found})
+        texts = spelled[r["pertanyaan"]]
+        per = [{m: answer_found(MODES[m](cur, t, vectors[t], ANSWER_K), r["kata_kunci"]) for m in modes} for t in texts]
+        ans_results.append({"id": r["id"], "q": r["pertanyaan"], "type": r["jenis"], "found": per[0],
+                            **({"typos": [{"q": t, "found": f} for t, f in zip(texts[1:], per[1:])]} if args.typos else {})})
     ans_summary = {m: sum(p["found"][m] for p in ans_results) / (len(ans_results) or 1) for m in modes}
+
+    typo_summary = None
+    if args.typos:
+        typo_summary = {}
+        for m in modes:
+            rows = {"as written": (doc_summary[m], ans_summary[m])}
+            for k in range(1, n_spell):
+                ds = summarise([p["typos"][k - 1]["ranks"][m] for p in scored])
+                ans = sum(p["typos"][k - 1]["found"][m] for p in ans_results) / (len(ans_results) or 1)
+                rows[f"typo {k}"] = (ds, ans)
+            typo_summary[m] = {name: {**ds, "ans@5": a} for name, (ds, a) in rows.items()}
 
     # ── Report ──
     print(f"\nDatabase : {host}   corpus {meta['corpus']['chunks']} chunks, fingerprint {meta['corpus']['fingerprint_sha256'][:12]}")
@@ -339,6 +375,20 @@ def main() -> None:
     for m in modes:
         s = doc_summary[m]
         print(f"{m:<20}{s['hit@1']:>10.0%}{s['hit@5']:>10.0%}{s['mrr']:>7.2f}{ans_summary[m]:>8.0%}")
+
+    if typo_summary:
+        print(f"\nWith typos (2 misspelled versions of every question, eval/typos.py):")
+        print(f"{'mode':<12}{'questions':<12}{'doc hit@1':>10}{'doc hit@5':>10}{'MRR':>7}{'ans@5':>8}")
+        for m in modes:
+            for name, s in typo_summary[m].items():
+                print(f"{m:<12}{name:<12}{s['hit@1']:>10.0%}{s['hit@5']:>10.0%}{s['mrr']:>7.2f}{s['ans@5']:>8.0%}")
+        lead = "hybrid" if "hybrid" in modes else modes[0]
+        lost = [(p["id"], t["q"]) for p in scored for t in p["typos"]
+                if p["ranks"][lead] and p["ranks"][lead] <= 5 and not (t["ranks"][lead] and t["ranks"][lead] <= 5)]
+        lost += [(p["id"], t["q"]) for p in ans_results for t in p["typos"] if p["found"][lead] and not t["found"][lead]]
+        print(f"\nLost by typos in {lead} (right in the top 5 as written, not with the typo): {len(lost)}")
+        for i, t in lost[:25]:
+            print(f"  {i:<20} {t}")
 
     if args.verbose:
         fmt = lambda r: "—" if r is None else str(r)
@@ -364,7 +414,7 @@ def main() -> None:
     out.write_text(json.dumps({"label": args.label, "time": stamp, "db_host": host, "meta": meta,
                                "doc_summary": doc_summary, "answer_summary": ans_summary,
                                "doc_questions": doc_results, "answer_questions": ans_results,
-                               "e2e": e2e, "backend": args.backend}, indent=2))
+                               "e2e": e2e, "backend": args.backend, "typo_summary": typo_summary}, indent=2))
     print(f"\nResults saved: {out.relative_to(HERE)}")
 
     if args.compare:
