@@ -120,7 +120,9 @@
               <span class="badge-warning shrink-0 mt-0.5 min-w-[2.75rem] justify-center">{q.count}×</span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm leading-snug {pin ? 'text-muted-foreground' : ''}">{q.query_text}</p>
-                <p class="text-[11px] text-muted-foreground mt-1">Last asked {formatDate(q.last_asked)}</p>
+                <p class="text-[11px] text-muted-foreground mt-1">
+                  Last asked {formatDate(q.last_asked)}{#if (q.variants ?? 1) > 1} · {q.variants} wordings grouped (typos, word order){/if}
+                </p>
               </div>
               <button
                 on:click={() => (pin ? unpinQuestion(pin.id) : pinQuestion(q.query_text))}

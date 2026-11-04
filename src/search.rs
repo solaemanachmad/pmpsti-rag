@@ -93,23 +93,25 @@ impl SearchEngine {
     }
 
     // ── Hybrid (default) — fallback ke fulltext jika embedding gagal ──
-    pub async fn search(
+    /// Hybrid search, also returning the question's embedding (None when embedding failed and the
+    /// search fell back to full text) — kept with the query log to group similar questions.
+    pub async fn search_with_embedding(
         &self,
         query:           &str,
         limit:           i64,
         category_filter: Option<&str>,
-    ) -> Result<Vec<SearchResult>, anyhow::Error> {
+    ) -> Result<(Vec<SearchResult>, Option<Vec<f32>>), anyhow::Error> {
         match self.embed_query(query).await {
             Ok(embedding) => {
-                let mut results = self.db.search_hybrid(query, embedding, limit, category_filter).await?;
+                let mut results = self.db.search_hybrid(query, embedding.clone(), limit, category_filter).await?;
                 self.enrich_snippets(&mut results, query);
-                Ok(results)
+                Ok((results, Some(embedding)))
             }
             Err(e) => {
                 warn!("Embedding gagal ({}), fallback ke fulltext search", e);
                 let mut results = self.db.search_fulltext(query, limit, category_filter).await?;
                 self.enrich_snippets(&mut results, query);
-                Ok(results)
+                Ok((results, None))
             }
         }
     }

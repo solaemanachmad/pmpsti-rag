@@ -89,10 +89,15 @@
 {:else}
   <p class="text-xs text-muted-foreground mb-2 px-1">{questions.length} {questions.length === 1 ? 'question' : 'questions'} · asked {totalAsks}× in total · most asked first</p>
   <ul class="card divide-y overflow-hidden {loading ? 'opacity-60' : ''} transition-opacity">
-    {#each questions as q (q.query)}
+    {#each questions as q (q.ids[0])}
       <li class="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
         <div class="flex-1 min-w-0">
           <p class="text-sm font-medium leading-relaxed break-words">{q.query}</p>
+          {#if q.variants?.length}
+            <p class="mt-1 text-xs text-muted-foreground break-words" title="Grouped because they mean the same (typos, other wording)">
+              Also asked as: {q.variants.map(v => `“${v}”`).join(' · ')}
+            </p>
+          {/if}
           <p class="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs text-muted-foreground">
             <span class={q.times > 1 ? 'badge-warning' : 'badge-neutral'}>asked {q.times}×</span>
             {#if q.not_found < q.times}<span class="badge-neutral" title="No relevant document was found">{q.times - q.not_found}× no sources</span>{/if}
