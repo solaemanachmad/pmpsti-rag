@@ -998,12 +998,11 @@ pub async fn ask(
 
     let tuning = crate::settings::get(); // Admin → Settings
     let start = Instant::now();
-    let found = match retrieve(
-        &state, &body.query, body.category_filter.as_deref(), body.search_mode.as_deref(),
-        body.top_k.unwrap_or(tuning.candidates), tuning.max_sources,
-    ).await {
-        Ok(f) => f,
-        Err(r) => return r,
+    let retrieval = {
+        let (state, query) = (state.clone(), body.query.clone());
+        let (category, mode) = (body.category_filter.clone(), body.search_mode.clone());
+        let (top_k, max_sources) = (body.top_k.unwrap_or(tuning.candidates), tuning.max_sources);
+        async move { retrieve(&state, &query, category.as_deref(), mode.as_deref(), top_k, max_sources).await }
     };
 
     // After the answer: save the turn to the session and log the question
@@ -1044,8 +1043,12 @@ pub async fn ask(
     };
 
     if body.stream.unwrap_or(false) {
-        return stream_answer(state, body.query.clone(), history, found, finish);
+        return stream_answer(state, body.query.clone(), history, retrieval, finish);
     }
+    let found = match retrieval.await {
+        Ok(f) => f,
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+    };
 
     // Call the LLM with exactly the same contexts as the source cards
     let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
@@ -1085,15 +1088,14 @@ async fn retrieve(
     search_mode: Option<&str>,
     top_k:       i64,
     max_sources: usize,
-) -> Result<Retrieved, HttpResponse> {
+) -> Result<Retrieved, String> {
     // hybrid scored best in scripts/eval_retrieval.py (see PR #5); rrf was worse
     let search_mode = search_mode.unwrap_or("hybrid");
     let (all_chunks, query_type) = tokio::join!(
         state.rag.search_chunks(query, category, search_mode, top_k),
         state.rag.classify_query(query),
     );
-    let all_chunks = all_chunks.map_err(|e| HttpResponse::InternalServerError()
-        .json(ApiError::new(500, format!("Gagal mencari dokumen: {}", e))))?;
+    let all_chunks = all_chunks.map_err(|e| format!("Gagal mencari dokumen: {e}"))?;
     let tuning = crate::settings::get();
     let hits = filter_sources(&all_chunks, query, tuning.min_score, 0.25, max_sources);
     let contexts = state.rag.build_context(&query_type, &hits).await;
@@ -1114,18 +1116,21 @@ fn source_refs(shown: &[crate::db::SearchResult]) -> Vec<SourceRef> {
 }
 
 /// Stream an answer as NDJSON, one JSON object per line:
+/// `{"type":"status","stage":"searching"}`, `{"type":"status","stage":"reading","sources":[{title,site}]}`
+/// and `{"type":"status","stage":"writing"}` while it works (for the progress shown in the chat),
 /// `{"type":"delta","text":…}` while the LLM writes (citations already renumbered), then
 /// `{"type":"done","answer":…,"sources":[…], …fields from finish}` or `{"type":"error","error":…}`.
 /// `finish(answer, cited contexts, number of contexts, top score)` saves/logs and returns extra
 /// fields for the done line.
-fn stream_answer<F, Fut>(
-    state:   web::Data<AppState>,
-    query:   String,
-    history: Vec<crate::rag::Message>,
-    found:   Retrieved,
-    finish:  F,
+fn stream_answer<R, F, Fut>(
+    state:     web::Data<AppState>,
+    query:     String,
+    history:   Vec<crate::rag::Message>,
+    retrieval: R,
+    finish:    F,
 ) -> HttpResponse
 where
+    R: std::future::Future<Output = Result<Retrieved, String>> + Send + 'static,
     F: FnOnce(String, Vec<crate::db::SearchResult>, usize, f32) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = serde_json::Value> + Send + 'static,
 {
@@ -1133,17 +1138,37 @@ where
     let (mut writer, reader) = tokio::io::duplex(16 * 1024);
 
     actix_web::rt::spawn(async move {
-        let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let mut cites = CitationRenumber::new(refs.len());
-        let mut answer = String::new();
-
         async fn line(w: &mut tokio::io::DuplexStream, v: serde_json::Value) {
             let mut s = v.to_string();
             s.push('\n');
             let _ = w.write_all(s.as_bytes()).await; // the client may have gone; keep going
             let _ = w.flush().await;
         }
+
+        line(&mut writer, serde_json::json!({ "type": "status", "stage": "searching" })).await;
+        let found = match retrieval.await {
+            Ok(f) => f,
+            Err(e) => {
+                log::warn!("[ask] search failed: {e}");
+                line(&mut writer, serde_json::json!({ "type": "error", "error": e })).await;
+                return;
+            }
+        };
+        let reading: Vec<serde_json::Value> = found.contexts.iter().map(|c| serde_json::json!({
+            "title": clean_source_title(&c.title, &c.subcategory),
+            "site":  reqwest::Url::parse(&c.source_url).ok()
+                .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
+                .unwrap_or_default(),
+        })).collect();
+        line(&mut writer, serde_json::json!({ "type": "status", "stage": "reading", "sources": reading })).await;
+        if !found.contexts.is_empty() {
+            line(&mut writer, serde_json::json!({ "type": "status", "stage": "writing" })).await;
+        }
+
+        let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut cites = CitationRenumber::new(refs.len());
+        let mut answer = String::new();
 
         let generate = async {
             let r = state.rag.answer_stream(&query, &history, &refs, &found.query_type, &tx).await;
@@ -1233,12 +1258,10 @@ pub async fn ask_public(
 
     let tuning = crate::settings::get(); // Admin → Settings; guests: at most 5 candidates and sources
     let start = Instant::now();
-    let found = match retrieve(
-        &state, &body.query, None, body.search_mode.as_deref(),
-        body.top_k.unwrap_or(tuning.candidates.min(5)), tuning.max_sources.min(5),
-    ).await {
-        Ok(f) => f,
-        Err(r) => return r,
+    let retrieval = {
+        let (state, query, mode) = (state.clone(), body.query.clone(), body.search_mode.clone());
+        let (top_k, max_sources) = (body.top_k.unwrap_or(tuning.candidates.min(5)), tuning.max_sources.min(5));
+        async move { retrieve(&state, &query, None, mode.as_deref(), top_k, max_sources).await }
     };
 
     // After the answer: count the question and log it (no user, no session) so unanswered
@@ -1262,8 +1285,12 @@ pub async fn ask_public(
     };
 
     if body.stream.unwrap_or(false) {
-        return stream_answer(state, body.query.clone(), vec![], found, finish);
+        return stream_answer(state, body.query.clone(), vec![], retrieval, finish);
     }
+    let found = match retrieval.await {
+        Ok(f) => f,
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+    };
 
     let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
     let answer = match state.rag.answer_with_chunks(&body.query, &[], &refs, &found.query_type).await {
@@ -1888,8 +1915,12 @@ impl CitationRenumber {
                 let repeated = if out.is_empty() { self.out.ends_with(&mark) } else { out.ends_with(&mark) };
                 if !repeated { out.push_str(&mark); }
             }
-            if out.len() == before && out.ends_with(' ') {
-                out.pop(); // the whole citation was dropped: no "word ." left behind
+            // The whole citation was dropped: no "word ." left behind. Keep the space when another
+            // citation or a word follows ("6 SKS [9][1]" → "6 SKS [1]").
+            let next = after[close + 1..].chars().next().or_else(|| self.pending.chars().next());
+            let ends_phrase = next.is_none_or(|c| c.is_whitespace() || ".,;:!?)".contains(c));
+            if out.len() == before && ends_phrase && out.ends_with(' ') {
+                out.pop();
             }
             rest = &after[close + 1..];
         }
@@ -2681,6 +2712,8 @@ mod citation_tests {
     fn lists_ranges_and_bad_numbers() {
         let (text, keep) = cited_sources("A [1, 2]. B [2-3]. C [9].", 3);
         assert_eq!(text, "A [1][2]. B [2][3]. C.");
+        let (text, _) = cited_sources("6 SKS [9][1], lalu [8] dan.", 1);
+        assert_eq!(text, "6 SKS [1], lalu dan.");
         assert_eq!(keep, vec![0, 1, 2]);
     }
 
@@ -2693,7 +2726,7 @@ mod citation_tests {
 
     #[test]
     fn streaming_pieces_give_the_same_text() {
-        let full = "Tesis 6 SKS [3]. Total [1, 3] dan [panduan](https://x.id) [2](https://y.id). Lain [9].";
+        let full = "Tesis 6 SKS [3]. Total [1, 3] dan [panduan](https://x.id) [2](https://y.id). Lain [9]. Juga [9][2] dan [7] ok.";
         let (whole, order) = super::cited_sources(full, 3);
         for size in [1, 2, 3, 5, 7] {
             let mut c = super::CitationRenumber::new(3);

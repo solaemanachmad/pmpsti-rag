@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import { isLoggedIn } from '$lib/stores/auth';
   import { askPublic, faq } from '$lib/api/client';
+  import type { AnswerStatus } from '$lib/api/client';
   import type { GuestAskResponse, SourceRef } from '$lib/api/client';
   import { renderMarkdown } from '$lib/markdown';
   import Logo from '$lib/components/Logo.svelte';
@@ -52,6 +53,7 @@
   let query = '';
   let streamingText = '';
   let isStreaming = false;
+  let progress: AnswerStatus | null = null; // searching → reading → writing, before the text
   let error = '';
   let quotaExceeded = false;
   let questionsLeft = GUEST_QUOTA;
@@ -107,6 +109,7 @@
     scrollBottom();
     isStreaming = true;
     streamingText = '';
+    progress = null;
 
     askPublic(
       text, getGuestToken(),
@@ -114,6 +117,7 @@
       (res: GuestAskResponse) => {
         messages = [...messages, { role: 'assistant', content: streamingText, sources: res.sources }];
         streamingText = '';
+        progress = null;
         isStreaming = false;
         questionsLeft = res.questions_left;
         setQuestionsUsed(res.questions_used);
@@ -125,7 +129,9 @@
         else error = err;
         isStreaming = false;
         streamingText = '';
-      }
+        progress = null;
+      },
+      (status) => { progress = status; scrollBottom(); }
     );
   }
 
@@ -264,7 +270,7 @@
       </footer>
     {:else}
       <div class="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
-        <MessageList {messages} {streamingText} {isStreaming} {error} />
+        <MessageList {messages} {streamingText} {isStreaming} {error} {progress} />
       </div>
     {/if}
   </div>
