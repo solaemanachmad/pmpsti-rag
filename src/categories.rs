@@ -1,8 +1,8 @@
 //! Topic categories for documents (Admin → Documents), two levels: "Akademik › Persuratan".
 //!
 //! - Table `categories`: `parent_id` NULL = top level. Seeded with `DEFAULT_TAXONOMY` when the
-//!   table is empty; after that the list belongs to the admins (rename/merge comes in a later
-//!   PR). Lookups use the `slug`, so renames must keep slugs unchanged.
+//!   table is empty; after that the list belongs to the admins (Admin → Categories: add,
+//!   rename, reorder, delete/merge). Lookups use the `slug`, so a rename keeps the slug.
 //! - `documents.category_id` points at a category; NULL = uncategorized. The old free-text
 //!   `category` / `subcategory` columns are left exactly as they are: source cards in the chat
 //!   build their titles from `subcategory`, so this module never rewrites them.
@@ -229,6 +229,171 @@ async fn exists(pool: &PgPool, id: i64) -> Result<bool, sqlx::Error> {
         .bind(id).fetch_one(pool).await
 }
 
+/// Why a category change was refused (mapped to an HTTP status by `CatError::response`).
+#[derive(Debug)]
+pub enum CatError {
+    BadRequest(String),
+    NotFound,
+    Conflict(String),
+    Db(sqlx::Error),
+}
+
+impl From<sqlx::Error> for CatError {
+    fn from(e: sqlx::Error) -> Self { CatError::Db(e) }
+}
+
+impl CatError {
+    fn response(self) -> HttpResponse {
+        match self {
+            CatError::BadRequest(m) => HttpResponse::BadRequest().json(ApiError::new(400, m)),
+            CatError::NotFound => HttpResponse::NotFound().json(ApiError::new(404, "Category not found")),
+            CatError::Conflict(m) => HttpResponse::Conflict().json(ApiError::new(409, m)),
+            CatError::Db(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e.to_string())),
+        }
+    }
+}
+
+const MAX_NAME_LEN: usize = 80;
+
+/// Trimmed name, or why it is not usable.
+fn clean_name(name: &str) -> Result<String, CatError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CatError::BadRequest("Name is required".into()));
+    }
+    if name.chars().count() > MAX_NAME_LEN {
+        return Err(CatError::BadRequest(format!("Name is longer than {MAX_NAME_LEN} characters")));
+    }
+    if slugify(name).is_empty() {
+        return Err(CatError::BadRequest("Name needs at least one letter or digit".into()));
+    }
+    Ok(name.to_string())
+}
+
+/// Refuse a name another category under the same parent already has (case-insensitive).
+async fn ensure_unique_name(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    parent_id: Option<i64>,
+    name: &str,
+    except: Option<i64>,
+) -> Result<(), CatError> {
+    let taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM categories
+                        WHERE parent_id IS NOT DISTINCT FROM $1 AND LOWER(name) = LOWER($2)
+                          AND id IS DISTINCT FROM $3)")
+        .bind(parent_id).bind(name).bind(except)
+        .fetch_one(&mut **tx).await?;
+    if taken {
+        return Err(CatError::Conflict(format!("\"{name}\" already exists here")));
+    }
+    Ok(())
+}
+
+/// Add a category at the top level (`parent_id` None) or under a top-level category; it goes
+/// last among its siblings. The slug comes from the name ("parent-slug/child" for a
+/// subcategory); a slug kept by a renamed category gets a numeric suffix. Returns the new id.
+pub async fn create(pool: &PgPool, name: &str, parent_id: Option<i64>) -> Result<i64, CatError> {
+    let name = clean_name(name)?;
+    let mut tx = pool.begin().await?;
+    let base = match parent_id {
+        None => slugify(&name),
+        Some(pid) => {
+            let parent = sqlx::query("SELECT slug, parent_id FROM categories WHERE id = $1")
+                .bind(pid).fetch_optional(&mut *tx).await?
+                .ok_or_else(|| CatError::BadRequest(format!("Unknown parent category {pid}")))?;
+            if parent.get::<Option<i64>, _>("parent_id").is_some() {
+                return Err(CatError::BadRequest("Categories have two levels: pick a top-level parent".into()));
+            }
+            format!("{}/{}", parent.get::<String, _>("slug"), slugify(&name))
+        }
+    };
+    ensure_unique_name(&mut tx, parent_id, &name, None).await?;
+    let mut slug = base.clone();
+    let mut n = 2;
+    while sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM categories WHERE slug = $1)")
+        .bind(&slug).fetch_one(&mut *tx).await?
+    {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO categories (parent_id, name, slug, sort_order)
+         VALUES ($1, $2, $3, (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM categories
+                              WHERE parent_id IS NOT DISTINCT FROM $1))
+         RETURNING id")
+        .bind(parent_id).bind(&name).bind(&slug)
+        .fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+/// Change the name only; the slug stays so lookups and rules keep working.
+pub async fn rename(pool: &PgPool, id: i64, name: &str) -> Result<(), CatError> {
+    let name = clean_name(name)?;
+    let mut tx = pool.begin().await?;
+    let parent_id: Option<i64> = sqlx::query_scalar("SELECT parent_id FROM categories WHERE id = $1")
+        .bind(id).fetch_optional(&mut *tx).await?
+        .ok_or(CatError::NotFound)?;
+    ensure_unique_name(&mut tx, parent_id, &name, Some(id)).await?;
+    sqlx::query("UPDATE categories SET name = $2 WHERE id = $1")
+        .bind(id).bind(&name).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Set the order of the siblings under `parent_id` (None = top level). `ids` must list exactly
+/// those siblings, so a stale page cannot drop or misplace one.
+pub async fn reorder(pool: &PgPool, parent_id: Option<i64>, ids: &[i64]) -> Result<(), CatError> {
+    let mut tx = pool.begin().await?;
+    let mut siblings: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM categories WHERE parent_id IS NOT DISTINCT FROM $1 FOR UPDATE")
+        .bind(parent_id).fetch_all(&mut *tx).await?;
+    let mut wanted = ids.to_vec();
+    siblings.sort_unstable();
+    wanted.sort_unstable();
+    if siblings != wanted {
+        return Err(CatError::Conflict("The category list changed; reload and try again".into()));
+    }
+    for (i, id) in ids.iter().enumerate() {
+        sqlx::query("UPDATE categories SET sort_order = $2 WHERE id = $1")
+            .bind(id).bind(i as i32).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Delete a category that has no subcategories. Its documents move to `move_to` (merge) or,
+/// with None, become uncategorized. Returns how many documents were moved.
+pub async fn delete(pool: &PgPool, id: i64, move_to: Option<i64>) -> Result<i64, CatError> {
+    if move_to == Some(id) {
+        return Err(CatError::BadRequest("Pick another category to move the documents to".into()));
+    }
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT id FROM categories WHERE id = $1 FOR UPDATE")
+        .bind(id).fetch_optional(&mut *tx).await?
+        .ok_or(CatError::NotFound)?;
+    let children: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM categories WHERE parent_id = $1")
+        .bind(id).fetch_one(&mut *tx).await?;
+    if children > 0 {
+        return Err(CatError::Conflict("Delete or move its subcategories first".into()));
+    }
+    if let Some(target) = move_to {
+        let ok: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1)")
+            .bind(target).fetch_one(&mut *tx).await?;
+        if !ok {
+            return Err(CatError::BadRequest(format!("Unknown category {target}")));
+        }
+    }
+    let moved: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT document_id) FROM documents WHERE category_id = $1")
+        .bind(id).fetch_one(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET category_id = $2 WHERE category_id = $1")
+        .bind(id).bind(move_to).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM categories WHERE id = $1").bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(moved)
+}
+
 // ── HTTP ──────────────────────────────────────────────────────────
 
 fn require_admin(req: &HttpRequest, state: &AppState) -> Result<JwtClaims, HttpResponse> {
@@ -282,6 +447,72 @@ pub async fn set_document_category_handler(
     }
 }
 
+#[derive(Deserialize)]
+pub struct CreateBody {
+    pub name: String,
+    /// null / missing = top level
+    #[serde(default)]
+    pub parent_id: Option<i64>,
+}
+
+/// POST /api/admin/categories — {"name": "Beasiswa", "parent_id": 1}
+pub async fn create_handler(req: HttpRequest, state: web::Data<AppState>, body: web::Json<CreateBody>) -> HttpResponse {
+    if let Err(r) = require_admin(&req, &state) { return r; }
+    match create(state.db.pool(), &body.name, body.parent_id).await {
+        Ok(id) => HttpResponse::Created().json(ApiSuccess::new(serde_json::json!({ "id": id }))),
+        Err(e) => e.response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RenameBody {
+    pub name: String,
+}
+
+/// PATCH /api/admin/categories/{id} — {"name": "New name"}; the slug is kept.
+pub async fn rename_handler(
+    req: HttpRequest, state: web::Data<AppState>, path: web::Path<i64>, body: web::Json<RenameBody>,
+) -> HttpResponse {
+    if let Err(r) = require_admin(&req, &state) { return r; }
+    match rename(state.db.pool(), path.into_inner(), &body.name).await {
+        Ok(()) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "renamed": true }))),
+        Err(e) => e.response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ReorderBody {
+    #[serde(default)]
+    pub parent_id: Option<i64>,
+    pub ids: Vec<i64>,
+}
+
+/// PUT /api/admin/categories/order — {"parent_id": null, "ids": [3, 1, 2]}
+pub async fn reorder_handler(req: HttpRequest, state: web::Data<AppState>, body: web::Json<ReorderBody>) -> HttpResponse {
+    if let Err(r) = require_admin(&req, &state) { return r; }
+    match reorder(state.db.pool(), body.parent_id, &body.ids).await {
+        Ok(()) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "reordered": true }))),
+        Err(e) => e.response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DeleteQuery {
+    /// category that receives the documents (merge); missing = they become uncategorized
+    pub move_to: Option<i64>,
+}
+
+/// DELETE /api/admin/categories/{id}?move_to=7
+pub async fn delete_handler(
+    req: HttpRequest, state: web::Data<AppState>, path: web::Path<i64>, query: web::Query<DeleteQuery>,
+) -> HttpResponse {
+    if let Err(r) = require_admin(&req, &state) { return r; }
+    match delete(state.db.pool(), path.into_inner(), query.move_to).await {
+        Ok(moved) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "moved_documents": moved }))),
+        Err(e) => e.response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +553,14 @@ mod tests {
         // Older documents used "Akademik / Kurikulum"
         assert_eq!(legacy_target("Akademik", "Kurikulum").as_deref(), Some("akademik/kurikulum"));
         assert_eq!(legacy_target("", "Tenaga Kependidikan").as_deref(), Some("sumber-daya-manusia/tenaga-kependidikan"));
+    }
+
+    #[test]
+    fn names_are_cleaned_and_checked() {
+        assert_eq!(clean_name("  Beasiswa ").unwrap(), "Beasiswa");
+        assert!(matches!(clean_name("   "), Err(CatError::BadRequest(_))));
+        assert!(matches!(clean_name("&&"), Err(CatError::BadRequest(_))));
+        assert!(matches!(clean_name(&"a".repeat(MAX_NAME_LEN + 1)), Err(CatError::BadRequest(_))));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import type { ComponentType } from 'svelte';
 import {
   MessageSquare, KeyRound, LayoutDashboard, Users, FileText, ScrollText, HelpCircle, FolderSync, MessageCircleQuestion, SlidersHorizontal,
-  BookA
+  BookA, FolderTree
 } from 'lucide-svelte';
 
 export interface NavItem {
@@ -35,6 +35,7 @@ export const adminNav: NavGroup[] = [
     label: 'Content',
     items: [
       { href: '/admin/documents', label: 'Documents', icon: FileText },
+      { href: '/admin/categories', label: 'Categories', icon: FolderTree },
       { href: '/admin/sources',   label: 'Sources',   icon: FolderSync },
       { href: '/admin/faq',       label: 'FAQ',       icon: HelpCircle },
       { href: '/admin/abbreviations', label: 'Abbreviations', icon: BookA }
