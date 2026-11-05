@@ -64,8 +64,9 @@ fn queued_message(dispatched: bool) -> &'static str {
     }
 }
 
+#[track_caller]
 fn server_error(e: String) -> HttpResponse {
-    HttpResponse::InternalServerError().json(ApiError::new(500, e))
+    crate::models::internal_error(e)
 }
 
 /// GET /api/admin/sources

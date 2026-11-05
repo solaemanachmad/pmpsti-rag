@@ -191,7 +191,7 @@ pub async fn list(req: HttpRequest, state: web::Data<AppState>) -> HttpResponse 
                 .map(|(s, e)| serde_json::json!({ "short": s, "expansion": e })).collect::<Vec<_>>(),
             "expand_enabled": crate::settings::get().expand_abbreviations,
         }))),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -203,7 +203,7 @@ pub async fn list_candidates(req: HttpRequest, state: web::Data<AppState>) -> Ht
     let days: i64 = q.get("days").and_then(|v| v.parse().ok()).unwrap_or(90).clamp(1, 3650);
     match candidates(state.db.pool(), days).await {
         Ok(c) => HttpResponse::Ok().json(ApiSuccess::new(c)),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -241,7 +241,7 @@ pub async fn save(req: HttpRequest, state: web::Data<AppState>, body: web::Json<
     invalidate();
     match res {
         Ok(r) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "id": r.get::<i64, _>("id") }))),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e.to_string())),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -253,7 +253,7 @@ pub async fn delete(req: HttpRequest, state: web::Data<AppState>, path: web::Pat
     invalidate();
     match res {
         Ok(r) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "deleted": r.rows_affected() }))),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e.to_string())),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 

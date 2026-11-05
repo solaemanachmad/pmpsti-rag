@@ -10,6 +10,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 
+/// Most search candidates an answer may use; also the cap on `top_k` sent by clients.
+pub const MAX_CANDIDATES: i64 = 30;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -77,8 +80,8 @@ impl Settings {
         if !(256..=8192).contains(&self.max_tokens) {
             return Err("max_tokens must be between 256 and 8192".into());
         }
-        if !(3..=30).contains(&self.candidates) {
-            return Err("candidates must be between 3 and 30".into());
+        if !(3..=MAX_CANDIDATES).contains(&self.candidates) {
+            return Err(format!("candidates must be between 3 and {MAX_CANDIDATES}"));
         }
         if !(1..=10).contains(&self.max_sources) {
             return Err("max_sources must be between 1 and 10".into());

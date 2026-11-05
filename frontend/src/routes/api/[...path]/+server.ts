@@ -1,5 +1,6 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
+import { sameOriginWrite } from '$lib/server/same-origin';
 
 const BACKEND = 'https://pmpsti-rag.onrender.com';
 
@@ -81,6 +82,12 @@ async function proxy(request: Request, url: URL, clientAddress: string): Promise
 }
 
 const handler: RequestHandler = ({ request, url, getClientAddress }) => {
+  if (!sameOriginWrite(request.method, request.headers.get('Origin'), url.origin)) {
+    return new Response(JSON.stringify({ success: false, error: 'Permintaan dari situs lain ditolak', code: 403 }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   let clientAddress = '';
   try { clientAddress = getClientAddress(); } catch { /* not available in this environment */ }
   return proxy(request, url, clientAddress);

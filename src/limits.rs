@@ -7,8 +7,14 @@
 //!   their own IP. Without `PROXY_SECRET` the socket peer is used (local development).
 //! - `Limiter`: fixed-window counters kept in memory (reset on restart, which is acceptable for
 //!   abuse protection). Pruned regularly from `main`.
+//! - `reject_cross_site`: blocks requests that change data when a browser sends them from another
+//!   site (CSRF). Together with the `SameSite=Lax` login cookie.
 
-use actix_web::HttpRequest;
+use actix_web::body::MessageBody;
+use actix_web::dev::{ServiceRequest, ServiceResponse};
+use actix_web::http::Method;
+use actix_web::middleware::Next;
+use actix_web::{HttpRequest, HttpResponse};
 use dashmap::DashMap;
 use std::net::IpAddr;
 use std::sync::OnceLock;
@@ -49,6 +55,62 @@ fn trusted_real_ip(secret: Option<&str>, sent_secret: Option<&str>, real_ip: Opt
 /// True when `PROXY_SECRET` is set (logged at startup).
 pub fn proxy_secret_configured() -> bool {
     proxy_secret().is_some()
+}
+
+/// True when the request came through the SvelteKit proxy (it sent the matching secret).
+fn sent_by_proxy(req: &HttpRequest) -> bool {
+    let sent = req.headers().get(PROXY_SECRET_HEADER).and_then(|v| v.to_str().ok()).map(str::trim);
+    matches!((proxy_secret(), sent), (Some(secret), Some(sent)) if same_secret(secret, sent))
+}
+
+// ── Cross-site requests (CSRF) ──
+
+/// Sites whose pages may send requests that change data: the frontend, plus the Vite dev and
+/// preview servers. Set once at startup from FRONTEND_URL and APP_BASE_URL.
+static ALLOWED_ORIGINS: OnceLock<Vec<String>> = OnceLock::new();
+
+pub fn set_allowed_origins(urls: &[&str]) {
+    let mut list: Vec<String> = urls.iter().map(|u| normalize_origin(u)).filter(|u| !u.is_empty()).collect();
+    list.extend(["http://localhost:5173", "http://localhost:4173"].map(String::from));
+    list.dedup();
+    let _ = ALLOWED_ORIGINS.set(list);
+}
+
+/// "https://Pmpsti-RAG.vercel.app/" → "https://pmpsti-rag.vercel.app"
+fn normalize_origin(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Whether a request may go on. Reading (GET, HEAD, OPTIONS) is always allowed. A request that
+/// changes data is refused only when it carries an `Origin` that is not one of ours: browsers
+/// always send `Origin` on such requests from another site, while tools (curl, the eval
+/// scripts, API keys) send none.
+fn origin_allowed(method: &Method, origin: Option<&str>, allowed: &[String]) -> bool {
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return true;
+    }
+    match origin {
+        None => true,
+        Some(o) => allowed.contains(&normalize_origin(o)),
+    }
+}
+
+/// Middleware: 403 for a request that changes data and comes from another site's page.
+/// Requests from the frontend proxy skip the check: the proxy already compared the browser's
+/// `Origin` with its own address (which also covers Vercel Preview addresses).
+pub async fn reject_cross_site(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<impl MessageBody>, actix_web::Error> {
+    let origin = req.headers().get(actix_web::http::header::ORIGIN).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let allowed = ALLOWED_ORIGINS.get().map(Vec::as_slice).unwrap_or(&[]);
+    if !sent_by_proxy(req.request()) && !origin_allowed(req.method(), origin.as_deref(), allowed) {
+        log::warn!("[csrf] refused {} {} from origin {:?}", req.method(), req.path(), origin);
+        let res = HttpResponse::Forbidden()
+            .json(crate::models::ApiError::new(403, "Permintaan dari situs lain ditolak"));
+        return Ok(req.into_response(res).map_into_right_body());
+    }
+    Ok(next.call(req).await?.map_into_left_body())
 }
 
 /// HTTP client for calls to outside services, so a stalled connection cannot hang a request:
@@ -154,6 +216,25 @@ mod tests {
         l.prune();
         assert_eq!(l.len(), 0);
         assert!(l.hit("a", 1, w).is_ok());
+    }
+
+    #[test]
+    fn writes_from_other_sites_are_refused() {
+        let allowed = vec!["https://pmpsti-rag.vercel.app".to_string(), "http://localhost:5173".to_string()];
+        let ok = |m: Method, o: Option<&str>| origin_allowed(&m, o, &allowed);
+        // Our own pages (any case, trailing slash)
+        assert!(ok(Method::POST, Some("https://pmpsti-rag.vercel.app")));
+        assert!(ok(Method::DELETE, Some("https://PMPSTI-RAG.vercel.app/")));
+        assert!(ok(Method::POST, Some("http://localhost:5173")));
+        // Tools without Origin (curl, eval scripts, API keys)
+        assert!(ok(Method::POST, None));
+        // Another site's form or script
+        assert!(!ok(Method::POST, Some("https://evil.example")));
+        assert!(!ok(Method::PATCH, Some("null")));
+        assert!(!ok(Method::PUT, Some("https://pmpsti-rag.vercel.app.evil.example")));
+        // Reading is never blocked
+        assert!(ok(Method::GET, Some("https://evil.example")));
+        assert!(ok(Method::OPTIONS, Some("https://evil.example")));
     }
 
     #[test]

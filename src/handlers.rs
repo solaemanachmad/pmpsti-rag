@@ -512,8 +512,51 @@ pub struct LoginAttempt {
     window_start: Instant,
 }
 
-const MAX_LOGIN_FAILS:   u32 = 5;
+/// Failed logins per 15 minutes: per visitor IP, and per account (an attacker with many IPs
+/// still gets only a few guesses at one password; higher than the IP limit so a student who
+/// mistypes on two devices is not locked out first).
+const MAX_LOGIN_FAILS:         u32 = 5;
+const MAX_ACCOUNT_LOGIN_FAILS: u32 = 10;
 const LOGIN_WINDOW_SECS: u64 = 15 * 60; // 15 menit
+
+/// The chat session a question goes to: the one the client asked for, unless it belongs to
+/// another user; then a new one, so nobody can write into someone else's chat.
+fn session_for(requested: String, owner: Option<i64>, uid: i64) -> String {
+    match owner {
+        Some(owner) if owner != uid => Uuid::new_v4().to_string(),
+        _ => requested,
+    }
+}
+
+/// Counter keys for a login attempt: the visitor IP and the account (email, any case).
+fn login_keys(ip: &str, email: &str) -> [(String, u32); 2] {
+    [
+        (format!("login-ip:{ip}"), MAX_LOGIN_FAILS),
+        (format!("login-account:{}", email.trim().to_lowercase()), MAX_ACCOUNT_LOGIN_FAILS),
+    ]
+}
+
+/// Seconds until login is allowed again, when one of the counters is full.
+fn login_blocked(map: &DashMap<String, LoginAttempt>, keys: &[(String, u32)]) -> Option<u64> {
+    keys.iter().filter_map(|(key, max)| {
+        let a = map.get(key)?;
+        let elapsed = a.window_start.elapsed().as_secs();
+        (elapsed < LOGIN_WINDOW_SECS && a.count >= *max).then(|| LOGIN_WINDOW_SECS - elapsed)
+    }).max()
+}
+
+/// Count one failed login on every counter (a counter whose window ended starts again).
+fn record_login_failure(map: &DashMap<String, LoginAttempt>, keys: &[(String, u32)]) {
+    let now = Instant::now();
+    for (key, _) in keys {
+        let mut a = map.entry(key.clone()).or_insert_with(|| LoginAttempt { count: 0, window_start: now });
+        if a.window_start.elapsed().as_secs() >= LOGIN_WINDOW_SECS {
+            a.count = 0;
+            a.window_start = now;
+        }
+        a.count += 1;
+    }
+}
 
 // ── App state yang di-share ke semua handler ──
 pub struct AppState {
@@ -540,8 +583,9 @@ const GUEST_ASKS_PER_IP_PER_DAY: u32 = 20;
 /// Guests together: questions per day, so guests cannot use up the quota students need.
 /// Override with GUEST_DAILY_LIMIT.
 const GUEST_ASKS_PER_DAY_DEFAULT: u32 = 150;
-/// Largest number of search candidates a request may ask for (`top_k`)
-const MAX_TOP_K: i64 = 50;
+/// Largest number of search candidates a request may ask for (`top_k`): the same cap as the
+/// admin setting. Values below 1 (negative ones made Postgres fail) become 1.
+const MAX_TOP_K: i64 = crate::settings::MAX_CANDIDATES;
 const MAX_GUEST_TOP_K: i64 = 10;
 /// API keys: requests per minute (the value chosen when creating a key is clamped to this)
 const MAX_API_KEY_RATE: i64 = 30;
@@ -664,7 +708,8 @@ pub async fn register(
     let display = body.display_name.clone().unwrap_or_default();
     let user = match state.db.create_user(&body.email, &hash, &display).await {
         Ok(u)  => u,
-        Err(e) => return HttpResponse::Conflict().json(ApiError::new(409, e)),
+        Err(e) if e == "Email sudah terdaftar" => return HttpResponse::Conflict().json(ApiError::new(409, e)),
+        Err(e) => return crate::models::internal_error(e),
     };
 
     // Buat token verifikasi dan kirim email
@@ -721,39 +766,21 @@ pub async fn login(
     state: web::Data<AppState>,
     body:  web::Json<LoginRequest>,
 ) -> HttpResponse {
-    // ── Rate limiting: at most 5 failures per 15 minutes per visitor IP ──
+    // ── Rate limiting: failed logins per visitor IP and per account ──
     let ip = crate::limits::client_ip(&req);
-
-    {
-        let now = Instant::now();
-        let mut entry = state.login_attempts.entry(ip.clone()).or_insert_with(|| LoginAttempt {
-            count: 0,
-            window_start: now,
-        });
-        if entry.window_start.elapsed().as_secs() >= LOGIN_WINDOW_SECS {
-            entry.count = 0;
-            entry.window_start = now;
-        }
-        if entry.count >= MAX_LOGIN_FAILS {
-            let remaining = LOGIN_WINDOW_SECS
-                .saturating_sub(entry.window_start.elapsed().as_secs());
-            return HttpResponse::TooManyRequests().json(ApiError::new(
-                429,
-                &format!(
-                    "Terlalu banyak percobaan login. Coba lagi dalam {} menit.",
-                    (remaining + 59) / 60
-                ),
-            ));
-        }
+    let keys = login_keys(&ip, &body.email);
+    if let Some(remaining) = login_blocked(&state.login_attempts, &keys) {
+        return HttpResponse::TooManyRequests().json(ApiError::new(
+            429,
+            &format!("Terlalu banyak percobaan login. Coba lagi dalam {} menit.", (remaining + 59) / 60),
+        ));
     }
 
     let user = match state.db.get_user_by_email(&body.email).await {
         Ok(Some(u)) => u,
         _ => {
-            // Increment fail counter agar tidak bisa brute-force enumeration
-            if let Some(mut entry) = state.login_attempts.get_mut(&ip) {
-                entry.count += 1;
-            }
+            // Count unknown emails too, so guessing which emails exist is limited as well
+            record_login_failure(&state.login_attempts, &keys);
             return HttpResponse::Unauthorized()
                 .json(ApiError::new(401, "Email atau password salah"));
         }
@@ -779,15 +806,15 @@ pub async fn login(
         .unwrap_or(false);
 
     if !ok {
-        if let Some(mut entry) = state.login_attempts.get_mut(&ip) {
-            entry.count += 1;
-        }
+        record_login_failure(&state.login_attempts, &keys);
         return HttpResponse::Unauthorized()
             .json(ApiError::new(401, "Email atau password salah"));
     }
 
-    // Login berhasil — reset counter
-    state.login_attempts.remove(&ip);
+    // Login succeeded: clear this visitor's and this account's failures
+    for (key, _) in &keys {
+        state.login_attempts.remove(key);
+    }
 
     let (token, expires_in) =
         match sign_jwt(user.id, &user.email, &user.role, &state.jwt_secret) {
@@ -817,22 +844,23 @@ pub async fn login(
         }))
 }
 
-/// Build the `auth_token` cookie. Production (https) needs `Secure; SameSite=None`
-/// because the frontend (Vercel) and backend (Render) are on different domains.
-/// Local development over plain `http://localhost` gets `SameSite=Lax` without
-/// `Secure`: Safari drops `Secure` cookies on http://localhost, so login looked
-/// successful but every next request failed with "Token tidak ditemukan".
+/// Build the `auth_token` cookie. `SameSite=Lax`: the browser only talks to the frontend's own
+/// address (the SvelteKit proxy forwards `/api` to the backend and the cookie), so the cookie is
+/// first-party and need not go along with requests that other sites start (CSRF).
+/// Local development over plain `http://localhost` gets no `Secure`: Safari drops `Secure`
+/// cookies on http://localhost, so login looked successful but every next request failed
+/// with "Token tidak ditemukan".
 fn auth_cookie(req: &HttpRequest, value: &str, max_age: u64) -> String {
     let info = req.connection_info();
     let attributes = cookie_attributes(info.scheme(), info.host());
     format!("auth_token={value}; HttpOnly; {attributes}; Path=/; Max-Age={max_age}")
 }
 
-/// `Secure; SameSite=None` unless the request is plain http to localhost / 127.0.0.1.
+/// `Secure; SameSite=Lax`, without `Secure` for plain http to localhost / 127.0.0.1.
 fn cookie_attributes(scheme: &str, host: &str) -> &'static str {
     let hostname = host.rsplit_once(':').map_or(host, |(name, _port)| name);
     let local = matches!(hostname, "localhost" | "127.0.0.1" | "[::1]");
-    if scheme == "http" && local { "SameSite=Lax" } else { "Secure; SameSite=None" }
+    if scheme == "http" && local { "SameSite=Lax" } else { "Secure; SameSite=Lax" }
 }
 
 pub async fn logout_handler(req: HttpRequest) -> HttpResponse {
@@ -877,7 +905,8 @@ pub async fn update_profile(
         body.email.as_deref(),
     ).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new("Profil berhasil diperbarui")),
-        Err(e) => HttpResponse::BadRequest().json(ApiError::new(400, e)),
+        Err(e) if e == "Email sudah digunakan" => HttpResponse::Conflict().json(ApiError::new(409, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -926,7 +955,7 @@ pub async fn update_password(
 
     match state.db.update_user_password(uid, &new_hash).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new("Password berhasil diperbarui")),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -1014,9 +1043,8 @@ pub async fn ask(
     let mut session_id = body.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     if body.session_id.is_some() {
         match state.db.session_owner(&session_id).await {
-            Ok(Some(owner)) if owner != uid => session_id = Uuid::new_v4().to_string(),
-            Ok(_) => {}
-            Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+            Ok(owner) => session_id = session_for(session_id, owner, uid),
+            Err(e) => return crate::models::internal_error(e),
         }
     }
     let session = state.db
@@ -1091,15 +1119,17 @@ pub async fn ask(
     }
     let found = match retrieval.await {
         Ok(f) => f,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => return crate::models::internal_error(e),
     };
 
     // Call the LLM with exactly the same contexts as the source cards
     let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
     let answer = match state.rag.answer_with_chunks(&body.query, &history, &refs, &found.query_type).await {
         Ok(r)  => r,
-        Err(e) => return HttpResponse::InternalServerError()
-            .json(ApiError::new(500, format!("Gagal mendapat jawaban: {}", e))),
+        Err(e) => {
+            log::warn!("[ask] answer failed: {e}");
+            return HttpResponse::InternalServerError().json(ApiError::new(500, crate::models::ANSWER_ERROR_MESSAGE));
+        }
     };
     // Show only the sources the answer cites, renumbered to match the text
     let (answer, cited) = cited_sources(&answer, refs.len());
@@ -1202,7 +1232,7 @@ where
             Ok(f) => f,
             Err(e) => {
                 log::warn!("[ask] search failed: {e}");
-                line(&mut writer, serde_json::json!({ "type": "error", "error": e })).await;
+                line(&mut writer, serde_json::json!({ "type": "error", "error": crate::models::SERVER_ERROR_MESSAGE })).await;
                 return;
             }
         };
@@ -1245,7 +1275,7 @@ where
         }
         if let Err(e) = result {
             log::warn!("[ask] streaming answer failed: {e}");
-            line(&mut writer, serde_json::json!({ "type": "error", "error": format!("Gagal mendapat jawaban: {e}") })).await;
+            line(&mut writer, serde_json::json!({ "type": "error", "error": crate::models::ANSWER_ERROR_MESSAGE })).await;
             return;
         }
 
@@ -1356,14 +1386,16 @@ pub async fn ask_public(
     }
     let found = match retrieval.await {
         Ok(f) => f,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => return crate::models::internal_error(e),
     };
 
     let refs: Vec<&crate::db::SearchResult> = found.contexts.iter().collect();
     let answer = match state.rag.answer_with_chunks(&body.query, &[], &refs, &found.query_type).await {
         Ok(r)  => r,
-        Err(e) => return HttpResponse::InternalServerError()
-            .json(ApiError::new(500, format!("Gagal mendapat jawaban: {}", e))),
+        Err(e) => {
+            log::warn!("[ask] answer failed: {e}");
+            return HttpResponse::InternalServerError().json(ApiError::new(500, crate::models::ANSWER_ERROR_MESSAGE));
+        }
     };
     // Show only the sources the answer cites, renumbered to match the text
     let (answer, cited) = cited_sources(&answer, refs.len());
@@ -1384,7 +1416,7 @@ pub async fn list_sessions(req: HttpRequest, state: web::Data<AppState>) -> Http
     let uid: i64 = claims.sub.parse().unwrap_or(0);
     match state.db.get_user_sessions(uid).await {
         Ok(sessions) => HttpResponse::Ok().json(ApiSuccess::new(sessions)),
-        Err(e)       => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)       => crate::models::internal_error(e),
     }
 }
 
@@ -1398,7 +1430,7 @@ pub async fn get_session_handler(
     match state.db.get_session(&path.into_inner(), uid).await {
         Ok(Some(s)) => HttpResponse::Ok().json(ApiSuccess::new(s)),
         Ok(None)    => HttpResponse::NotFound().json(ApiError::new(404, "Session tidak ditemukan")),
-        Err(e)      => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)      => crate::models::internal_error(e),
     }
 }
 
@@ -1412,7 +1444,7 @@ pub async fn delete_session_handler(
     match state.db.delete_session(&path.into_inner(), uid).await {
         Ok(true)  => HttpResponse::Ok().json(ApiSuccess::new("Session dihapus")),
         Ok(false) => HttpResponse::NotFound().json(ApiError::new(404, "Session tidak ditemukan")),
-        Err(e)    => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)    => crate::models::internal_error(e),
     }
 }
 
@@ -1428,7 +1460,7 @@ pub async fn rename_session_handler(
     match state.db.rename_session(&path.into_inner(), uid, title).await {
         Ok(true)  => HttpResponse::Ok().json(ApiSuccess::new("Session diubah")),
         Ok(false) => HttpResponse::NotFound().json(ApiError::new(404, "Session tidak ditemukan")),
-        Err(e)    => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)    => crate::models::internal_error(e),
     }
 }
 
@@ -1473,7 +1505,7 @@ pub async fn create_api_key_handler(
             key_prefix: prefix,
             name: body.name.clone(),
         })),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -1482,7 +1514,7 @@ pub async fn list_api_keys(req: HttpRequest, state: web::Data<AppState>) -> Http
     let uid: i64 = claims.sub.parse().unwrap_or(0);
     match state.db.get_api_keys(uid).await {
         Ok(keys) => HttpResponse::Ok().json(ApiSuccess::new(keys)),
-        Err(e)   => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)   => crate::models::internal_error(e),
     }
 }
 
@@ -1496,7 +1528,7 @@ pub async fn revoke_api_key_handler(
     match state.db.revoke_api_key(path.into_inner(), uid).await {
         Ok(true)  => HttpResponse::Ok().json(ApiSuccess::new("API key dinonaktifkan")),
         Ok(false) => HttpResponse::NotFound().json(ApiError::new(404, "API key tidak ditemukan")),
-        Err(e)    => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)    => crate::models::internal_error(e),
     }
 }
 
@@ -1511,8 +1543,7 @@ pub async fn query_stats(req: HttpRequest, state: web::Data<AppState>) -> HttpRe
     }
     match state.db.get_query_log_stats().await {
         Ok(stats) => HttpResponse::Ok().json(ApiSuccess::new(stats)),
-        Err(e)    => HttpResponse::InternalServerError()
-            .json(ApiError::new(500, format!("{}", e))),
+        Err(e)    => crate::models::internal_error(e),
     }
 }
 
@@ -1521,8 +1552,7 @@ pub async fn list_categories_handler(
 ) -> HttpResponse {
     match state.db.list_categories().await {
         Ok(cats) => HttpResponse::Ok().json(ApiSuccess::new(cats)),
-        Err(e)   => HttpResponse::InternalServerError()
-            .json(ApiError::new(500, format!("{}", e))),
+        Err(e)   => crate::models::internal_error(e),
     }
 }
 
@@ -1544,7 +1574,7 @@ pub async fn admin_list_users(req: HttpRequest, state: web::Data<AppState>) -> H
     }
     match state.db.admin_list_users().await {
         Ok(users) => HttpResponse::Ok().json(ApiSuccess::new(users)),
-        Err(e)    => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)    => crate::models::internal_error(e),
     }
 }
 
@@ -1588,7 +1618,8 @@ pub async fn admin_create_user(
 
     let user = match state.db.create_user_with_role(&email, &hash, &display_name, &role).await {
         Ok(u)  => u,
-        Err(e) => return HttpResponse::Conflict().json(ApiError::new(409, e)),
+        Err(e) if e == "Email sudah terdaftar" => return HttpResponse::Conflict().json(ApiError::new(409, e)),
+        Err(e) => return crate::models::internal_error(e),
     };
 
     // Buat password reset token sebagai "set password" link
@@ -1721,7 +1752,7 @@ pub async fn admin_set_user_role(
     let role = body.get("role").and_then(|v| v.as_str()).unwrap_or("user");
     match state.db.admin_set_role(path.into_inner(), role).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new("Role diperbarui")),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -1738,7 +1769,7 @@ pub async fn admin_toggle_user(
     let active = body.get("is_active").and_then(|v| v.as_bool()).unwrap_or(true);
     match state.db.admin_set_active(path.into_inner(), active).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new("Status user diperbarui")),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -1754,7 +1785,7 @@ pub async fn admin_verify_user(
     }
     match state.db.admin_verify_user(path.into_inner()).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new("User diverifikasi dan diaktifkan")),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -1778,7 +1809,7 @@ pub async fn admin_delete_user(
     }
     match state.db.admin_delete_user(user_id).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new("User dihapus")),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -1789,7 +1820,7 @@ pub async fn admin_list_sessions(req: HttpRequest, state: web::Data<AppState>) -
     }
     match state.db.admin_list_sessions().await {
         Ok(sessions) => HttpResponse::Ok().json(ApiSuccess::new(sessions)),
-        Err(e)       => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)       => crate::models::internal_error(e),
     }
 }
 
@@ -1805,7 +1836,7 @@ pub async fn admin_delete_session(
     match state.db.admin_delete_session(&path.into_inner()).await {
         Ok(true)  => HttpResponse::Ok().json(ApiSuccess::new("Session dihapus")),
         Ok(false) => HttpResponse::NotFound().json(ApiError::new(404, "Session tidak ditemukan")),
-        Err(e)    => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)    => crate::models::internal_error(e),
     }
 }
 
@@ -1820,7 +1851,7 @@ pub async fn admin_list_documents(req: HttpRequest, state: web::Data<AppState>) 
     }
     match state.db.admin_list_documents().await {
         Ok(docs) => HttpResponse::Ok().json(ApiSuccess::new(docs)),
-        Err(e)   => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)   => crate::models::internal_error(e),
     }
 }
 
@@ -1837,7 +1868,7 @@ pub async fn admin_delete_document(
         Ok(n)  => HttpResponse::Ok().json(ApiSuccess::new(
             serde_json::json!({ "deleted_chunks": n })
         )),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -1874,7 +1905,7 @@ pub async fn admin_update_document(
         Ok(n)  => HttpResponse::Ok().json(ApiSuccess::new(
             serde_json::json!({ "updated_chunks": n })
         )),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -2071,7 +2102,7 @@ pub async fn admin_list_chunks(
     }
     match state.db.admin_list_chunks(&query.document_id).await {
         Ok(chunks) => HttpResponse::Ok().json(ApiSuccess::new(chunks)),
-        Err(e)     => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)     => crate::models::internal_error(e),
     }
 }
 
@@ -2086,7 +2117,7 @@ pub async fn admin_delete_chunk(
     }
     match state.db.admin_delete_chunk(path.into_inner()).await {
         Ok(n)  => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "deleted": n }))),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -2110,7 +2141,7 @@ pub async fn admin_update_chunk(
     }
     match state.db.admin_update_chunk(path.into_inner(), &body.content).await {
         Ok(()) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "updated": true }))),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -2124,7 +2155,7 @@ pub async fn faq_public(state: web::Data<AppState>) -> HttpResponse {
     let limit = 8i64;
     match state.db.faq_public(limit).await {
         Ok(qs) => HttpResponse::Ok().json(ApiSuccess::new(qs)),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -2134,7 +2165,7 @@ pub async fn admin_faq_pins(req: HttpRequest, state: web::Data<AppState>) -> Htt
     if claims.role != "admin" { return HttpResponse::Forbidden().json(ApiError::new(403, "Hanya admin")); }
     match state.db.faq_list_pins().await {
         Ok(pins) => HttpResponse::Ok().json(ApiSuccess::new(pins)),
-        Err(e)   => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e)   => crate::models::internal_error(e),
     }
 }
 
@@ -2145,7 +2176,7 @@ pub async fn admin_faq_top(req: HttpRequest, state: web::Data<AppState>) -> Http
     let limit = 30i64;
     match state.db.faq_top_queries(limit).await {
         Ok(qs) => HttpResponse::Ok().json(ApiSuccess::new(qs)),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -2166,7 +2197,7 @@ pub async fn admin_faq_pin(
     }
     match state.db.faq_pin(body.question.trim(), admin_id).await {
         Ok(id) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "id": id }))),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -2180,7 +2211,7 @@ pub async fn admin_faq_unpin(
     if claims.role != "admin" { return HttpResponse::Forbidden().json(ApiError::new(403, "Hanya admin")); }
     match state.db.faq_unpin(path.into_inner()).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new("Unpinned")),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -2648,14 +2679,58 @@ pub async fn admin_ingest_text(
 #[cfg(test)]
 mod tests {
     use super::{cookie_attributes, extract_page, with_heading_path};
+    use super::{login_blocked, login_keys, record_login_failure, session_for, LOGIN_WINDOW_SECS,
+        MAX_ACCOUNT_LOGIN_FAILS, MAX_API_KEY_RATE, MAX_GUEST_TOP_K, MAX_LOGIN_FAILS, MAX_TOP_K};
+    use dashmap::DashMap;
+    use uuid::Uuid;
 
     #[test]
     fn cookie_is_secure_except_on_local_http() {
-        assert_eq!(cookie_attributes("https", "pmpsti-rag.onrender.com"), "Secure; SameSite=None");
-        assert_eq!(cookie_attributes("http", "pmpsti-rag.onrender.com"), "Secure; SameSite=None");
+        assert_eq!(cookie_attributes("https", "pmpsti-rag.onrender.com"), "Secure; SameSite=Lax");
+        assert_eq!(cookie_attributes("http", "pmpsti-rag.onrender.com"), "Secure; SameSite=Lax");
         assert_eq!(cookie_attributes("http", "localhost:5173"), "SameSite=Lax");
         assert_eq!(cookie_attributes("http", "127.0.0.1:8080"), "SameSite=Lax");
-        assert_eq!(cookie_attributes("https", "localhost:5173"), "Secure; SameSite=None");
+        assert_eq!(cookie_attributes("https", "localhost:5173"), "Secure; SameSite=Lax");
+        // Never `None`: other sites' forms must not carry the login cookie
+        for (scheme, host) in [("https", "pmpsti-rag.vercel.app"), ("http", "localhost:5173")] {
+            assert!(!cookie_attributes(scheme, host).contains("None"));
+        }
+    }
+
+    #[test]
+    fn another_users_session_is_not_reused() {
+        let id = "8a1c0f6e-0000-4000-8000-000000000001".to_string();
+        assert_eq!(session_for(id.clone(), Some(7), 7), id, "own session");
+        assert_eq!(session_for(id.clone(), None, 7), id, "new session id");
+        let other = session_for(id.clone(), Some(8), 7);
+        assert_ne!(other, id, "someone else's session gets a new id");
+        assert!(Uuid::parse_str(&other).is_ok());
+    }
+
+    #[test]
+    fn client_numbers_are_clamped() {
+        assert_eq!((-5i64).clamp(1, MAX_TOP_K), 1);
+        assert_eq!(1_000_000i64.clamp(1, MAX_TOP_K), 30);
+        assert!(MAX_GUEST_TOP_K <= MAX_TOP_K);
+        assert!(MAX_API_KEY_RATE <= 60, "API keys: at most 60 requests a minute");
+    }
+
+    #[test]
+    fn login_failures_count_per_ip_and_per_account() {
+        let map = DashMap::new();
+        let from = |ip: &str, email: &str| login_keys(ip, email);
+        // One IP: blocked after MAX_LOGIN_FAILS failures, other IPs are not
+        for _ in 0..MAX_LOGIN_FAILS { record_login_failure(&map, &from("1.1.1.1", "a@mail.ugm.ac.id")); }
+        assert!(login_blocked(&map, &from("1.1.1.1", "b@mail.ugm.ac.id")).is_some());
+        assert!(login_blocked(&map, &from("2.2.2.2", "b@mail.ugm.ac.id")).is_none());
+        // One account from many IPs: blocked after MAX_ACCOUNT_LOGIN_FAILS, any case of the email
+        for n in 0..MAX_ACCOUNT_LOGIN_FAILS {
+            assert!(login_blocked(&map, &from(&format!("10.0.0.{n}"), "victim@mail.ugm.ac.id")).is_none());
+            record_login_failure(&map, &from(&format!("10.0.0.{n}"), "victim@mail.ugm.ac.id"));
+        }
+        let wait = login_blocked(&map, &from("9.9.9.9", " Victim@Mail.UGM.ac.id ")).expect("account is locked");
+        assert!(wait > 0 && wait <= LOGIN_WINDOW_SECS);
+        assert!(login_blocked(&map, &from("9.9.9.9", "other@mail.ugm.ac.id")).is_none());
     }
 
     // Real pages saved on 2026-10-18, so parsing can be tested without the network.
