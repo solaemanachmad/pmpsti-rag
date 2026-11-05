@@ -720,6 +720,8 @@ export interface AdminQueryLog {
   outcome?: '' | 'answered' | 'not_found' | 'no_sources';
   /** questions with the same meaning within the filter, this one included */
   similar: number;
+  /** the answer stopped at the max-tokens limit (the student saw a "cut off" note) */
+  truncated?: boolean;
 }
 export interface QueryLogFilter {
   outcome?: '' | 'answered' | 'not_found' | 'no_sources';

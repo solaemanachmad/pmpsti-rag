@@ -113,6 +113,7 @@
               <span class="flex flex-wrap gap-1.5 mt-1">
                 <span class="badge-neutral">{log.guest ? 'guest' : 'signed in'}</span>
                 {#if log.similar > 1}<span class="badge-neutral" title="Questions with the same meaning (typos, other wording) in this list">{log.similar}× similar</span>{/if}
+                {#if log.truncated}<span class="badge-warning" title="The answer stopped at the max tokens limit (Admin → Settings)">truncated</span>{/if}
               </span>
             </td>
             <td><span class={cls}>{label}</span> <span class="text-xs text-muted-foreground">{log.num_results} {log.num_results === 1 ? 'source' : 'sources'}</span></td>
@@ -131,6 +132,7 @@
             <span class={cls}>{label}</span>
             <span class="badge-neutral">{log.guest ? 'guest' : 'signed in'}</span>
             {#if log.similar > 1}<span class="badge-neutral">{log.similar}× similar</span>{/if}
+            {#if log.truncated}<span class="badge-warning">truncated</span>{/if}
             <span>{(log.search_time_ms / 1000).toFixed(1)} s · {formatDateTime(log.created_at)}</span>
           </div>
         </li>

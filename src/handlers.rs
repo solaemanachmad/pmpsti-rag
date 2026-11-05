@@ -1079,7 +1079,8 @@ pub async fn ask(
             let _ = state.db.save_session(&session).await;
             let _ = state.db.log_query(
                 &query, "id", &category, n_contexts as i32, top_score, elapsed_ms as i64,
-                Some(&session_id), Some(uid), answer_outcome(&answer, n_contexts), embedding,
+                Some(&session_id), Some(uid), answer_outcome(&answer, n_contexts),
+                crate::rag::is_truncated(&answer), embedding,
             ).await;
             serde_json::json!({ "session_id": session_id, "search_time_ms": elapsed_ms })
         }
@@ -1339,7 +1340,8 @@ pub async fn ask_public(
             let new_count = state.db.guest_increment(&guest_token).await;
             let _ = state.db.log_query(
                 &query, "id", "", n_contexts as i32, top_score, elapsed_ms as i64,
-                None, None, answer_outcome(&answer, n_contexts), embedding,
+                None, None, answer_outcome(&answer, n_contexts),
+                crate::rag::is_truncated(&answer), embedding,
             ).await;
             serde_json::json!({
                 "search_time_ms": elapsed_ms,

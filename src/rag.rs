@@ -238,7 +238,8 @@ impl RagEngine {
         ];
         let models = model_chain(&self.model());
         match self.llm.provider {
-            LlmProvider::Gemini           => self.call_gemini_models(&models, system, &messages, max_tokens).await,
+            // No truncation note here: admin tools (e.g. draft checks) parse the reply
+            LlmProvider::Gemini           => self.call_gemini_models(&models, system, &messages, max_tokens).await.map(|t| t.text),
             LlmProvider::OpenAICompatible => self.call_openai_models(&models, &messages, max_tokens).await,
             LlmProvider::Ollama           => self.call_ollama_model(&self.model(), &messages).await,
         }
@@ -252,7 +253,7 @@ impl RagEngine {
             Message { role: "user".into(), content: "Tes koneksi".into() },
         ];
         match self.llm.provider {
-            LlmProvider::Gemini           => self.call_gemini_models(&[model.to_string()], "Balas hanya dengan kata: OK", &messages, 16).await,
+            LlmProvider::Gemini           => self.call_gemini_models(&[model.to_string()], "Balas hanya dengan kata: OK", &messages, 16).await.map(|t| t.text),
             LlmProvider::OpenAICompatible => self.call_openai_models(&[model.to_string()], &messages, 16).await,
             LlmProvider::Ollama           => self.call_ollama_model(model, &messages).await,
         }
@@ -666,7 +667,7 @@ impl RagEngine {
 
     async fn call_gemini(&self, system_prompt: &str, messages: &[Message]) -> Result<String> {
         let max_tokens = crate::settings::get().max_tokens;
-        self.call_gemini_models(&model_chain(&self.model()), system_prompt, messages, max_tokens).await
+        Ok(self.call_gemini_models(&model_chain(&self.model()), system_prompt, messages, max_tokens).await?.for_student(None))
     }
 
     /// Stream an answer from Gemini (`streamGenerateContent`, SSE), trying the model chain
@@ -712,7 +713,7 @@ impl RagEngine {
             take_lines(&mut buf, &mut answer, true);
             let sent_text = !answer.text.is_empty();
             match answer.finish(&model) {
-                Ok(text) => return Ok(text),
+                Ok(t) => return Ok(t.for_student(Some(tx))),
                 // Nothing shown yet: the next model can still give the whole answer.
                 Err(e) if !sent_text => {
                     log::warn!("[llm] {e} — trying the next model");
@@ -727,7 +728,7 @@ impl RagEngine {
     }
 
     /// Try `models` in order (next one on quota / overload / unknown model).
-    async fn call_gemini_models(&self, models: &[String], system_prompt: &str, messages: &[Message], max_tokens: u32) -> Result<String> {
+    async fn call_gemini_models(&self, models: &[String], system_prompt: &str, messages: &[Message], max_tokens: u32) -> Result<GeminiText> {
         let req = gemini_request(system_prompt, messages, max_tokens)?;
 
         let mut last_err = anyhow::anyhow!("no Gemini model configured");
@@ -750,7 +751,7 @@ impl RagEngine {
                 Err(e) => answer.error = Some(format!("unreadable response: {e}")),
             }
             match answer.finish(&model) {
-                Ok(text) => return Ok(text),
+                Ok(t) => return Ok(t),
                 Err(e) => {
                     log::warn!("[llm] {e} — trying the next model");
                     last_err = anyhow::anyhow!(e);
@@ -836,7 +837,7 @@ impl GeminiAnswer {
     /// an error event, or a stop for SAFETY / RECITATION / OTHER means a broken answer.
     /// MAX_TOKENS is kept: it is a long answer cut at the configured limit, and the next
     /// model has the same limit.
-    fn finish(self, model: &str) -> std::result::Result<String, String> {
+    fn finish(self, model: &str) -> std::result::Result<GeminiText, String> {
         if let Some(e) = self.error {
             return Err(format!("Gemini error during the answer ({model}): {e}"));
         }
@@ -844,15 +845,40 @@ impl GeminiAnswer {
             return Err(format!("Gemini returned an empty answer ({model}, finishReason {:?})", self.finish));
         }
         match self.finish.as_deref() {
-            Some("STOP") => Ok(self.text),
+            Some("STOP") => Ok(GeminiText { text: self.text, truncated: false }),
             Some("MAX_TOKENS") => {
                 log::warn!("[llm] {model} answer hit maxOutputTokens — consider raising max_tokens");
-                Ok(self.text)
+                Ok(GeminiText { text: self.text, truncated: true })
             }
             None => Err(format!("Gemini answer stopped before it finished ({model}, no finishReason)")),
             Some(other) => Err(format!("Gemini answer incomplete ({model}, finishReason {other})")),
         }
     }
+}
+
+/// A finished Gemini answer; `truncated` = it stopped at maxOutputTokens.
+#[derive(Debug, PartialEq)]
+struct GeminiText {
+    text:      String,
+    truncated: bool,
+}
+
+impl GeminiText {
+    /// The answer as the student sees it: a cut answer gets `TRUNCATED_NOTE`, which is also
+    /// sent to `tx` when the answer was streamed (the text itself already went there).
+    fn for_student(self, tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>) -> String {
+        if !self.truncated { return self.text; }
+        if let Some(tx) = tx { let _ = tx.send(TRUNCATED_NOTE.to_string()); }
+        self.text + TRUNCATED_NOTE
+    }
+}
+
+/// Added to an answer that stopped at maxOutputTokens, so the student knows it is incomplete.
+pub const TRUNCATED_NOTE: &str = "\n\n_Jawaban terpotong karena terlalu panjang, coba tanyakan lebih spesifik._";
+
+/// Whether an answer carries `TRUNCATED_NOTE` (logged as `query_logs.truncated`).
+pub fn is_truncated(answer: &str) -> bool {
+    answer.trim_end().ends_with(TRUNCATED_NOTE.trim())
 }
 
 /// Answer when no document matched (no LLM call).
@@ -928,7 +954,7 @@ mod model_chain_tests {
             "",
             r#"data: {"candidates":[{"content":{"parts":[{"text":"isten Akademik."}]},"finishReason":"STOP"}]}"#,
         ]);
-        assert_eq!(a.finish("m").unwrap(), "Halo! Saya Asisten Akademik.");
+        assert_eq!(a.finish("m").unwrap().text, "Halo! Saya Asisten Akademik.");
     }
 
     #[test]
@@ -958,14 +984,32 @@ mod model_chain_tests {
         ]},"finishReason":"STOP"}]});
         let mut a = GeminiAnswer::default();
         a.add(gemini_piece(&v));
-        assert_eq!(a.finish("m").unwrap(), "**Prasyarat** tesis: 6 SKS [1].");
+        assert_eq!(a.finish("m").unwrap().text, "**Prasyarat** tesis: 6 SKS [1].");
+    }
+
+    #[test]
+    fn truncated_answer_gets_the_note_in_both_paths() {
+        let cut = || GeminiText { text: "| 1 | Suyanto |".into(), truncated: true };
+        // Non-streaming: the note is appended to the returned answer
+        let answer = cut().for_student(None);
+        assert_eq!(answer, format!("| 1 | Suyanto |{TRUNCATED_NOTE}"));
+        assert!(is_truncated(&answer));
+        // Streaming: the note also goes to the client after the streamed text
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(is_truncated(&cut().for_student(Some(&tx))));
+        assert_eq!(rx.try_recv().unwrap(), TRUNCATED_NOTE);
+        // A finished answer is unchanged and sends nothing extra
+        let done = GeminiText { text: "Tesis 6 SKS [1].".into(), truncated: false }.for_student(Some(&tx));
+        assert_eq!(done, "Tesis 6 SKS [1].");
+        assert!(!is_truncated(&done));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn max_tokens_is_kept_but_empty_or_blocked_is_not() {
         let mut a = GeminiAnswer::default();
         a.add(gemini_piece(&serde_json::json!({"candidates":[{"content":{"parts":[{"text":"| No | Nama |"}]},"finishReason":"MAX_TOKENS"}]})));
-        assert!(a.finish("m").is_ok());
+        assert!(a.finish("m").unwrap().truncated);
         let mut a = GeminiAnswer::default();
         a.add(gemini_piece(&serde_json::json!({"candidates":[{"finishReason":"STOP"}]})));
         assert!(a.finish("m").unwrap_err().contains("empty"));
