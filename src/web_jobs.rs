@@ -86,7 +86,7 @@ async fn requeue_stale(pool: &PgPool) {
 fn keep_awake() -> tokio::task::JoinHandle<()> {
     tokio::spawn(async {
         let Ok(base) = std::env::var("RENDER_EXTERNAL_URL") else { return };
-        let http = reqwest::Client::new();
+        let http = crate::limits::http_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(30), Some(std::time::Duration::from_secs(60)));
         loop {
             tokio::time::sleep(Duration::from_secs(300)).await;
             let _ = http.get(format!("{}/health", base.trim_end_matches('/'))).send().await;

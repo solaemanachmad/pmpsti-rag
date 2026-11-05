@@ -523,6 +523,38 @@ pub struct AppState {
     pub resend_key:   String,
     pub app_base_url: String,
     pub login_attempts: Arc<DashMap<String, LoginAttempt>>,
+    /// Question limits for guests and signed-in users (see `crate::limits`)
+    pub limits:       Arc<crate::limits::Limiter>,
+}
+
+/// Drop login-failure and API-key windows that have ended (called regularly from `main`).
+pub fn prune_login_attempts(map: &DashMap<String, LoginAttempt>) {
+    map.retain(|_, a| a.window_start.elapsed().as_secs() < LOGIN_WINDOW_SECS);
+}
+
+// ── Question limits (Gemini free tier: ~500 answers a day for everyone together) ──
+/// Signed-in users and API keys: questions per hour per user
+const USER_ASKS_PER_HOUR: u32 = 60;
+/// Guests: questions per day per IP address (on top of GUEST_QUOTA per browser)
+const GUEST_ASKS_PER_IP_PER_DAY: u32 = 20;
+/// Guests together: questions per day, so guests cannot use up the quota students need.
+/// Override with GUEST_DAILY_LIMIT.
+const GUEST_ASKS_PER_DAY_DEFAULT: u32 = 150;
+/// Largest number of search candidates a request may ask for (`top_k`)
+const MAX_TOP_K: i64 = 50;
+const MAX_GUEST_TOP_K: i64 = 10;
+/// API keys: requests per minute (the value chosen when creating a key is clamped to this)
+const MAX_API_KEY_RATE: i64 = 30;
+
+const DAY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
+
+fn guest_daily_limit() -> u32 {
+    std::env::var("GUEST_DAILY_LIMIT").ok().and_then(|v| v.parse().ok()).unwrap_or(GUEST_ASKS_PER_DAY_DEFAULT)
+}
+
+fn too_many(message: String) -> HttpResponse {
+    HttpResponse::TooManyRequests().json(ApiError::new(429, &message))
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -583,7 +615,8 @@ async fn ask_user(req: &HttpRequest, state: &AppState) -> Result<i64, HttpRespon
             e.count = 0;
             e.window_start = now;
         }
-        if e.count >= rate_limit.max(1) as u32 {
+        let rate_limit = rate_limit.clamp(1, MAX_API_KEY_RATE as i32);
+        if e.count >= rate_limit as u32 {
             return Err(HttpResponse::TooManyRequests().json(ApiError::new(
                 429, &format!("Batas {rate_limit} permintaan per menit untuk API key ini tercapai"))));
         }
@@ -688,12 +721,8 @@ pub async fn login(
     state: web::Data<AppState>,
     body:  web::Json<LoginRequest>,
 ) -> HttpResponse {
-    // ── Rate limiting: max 5 gagal per 15 menit per IP ──
-    let ip = req
-        .connection_info()
-        .peer_addr()
-        .unwrap_or("unknown")
-        .to_string();
+    // ── Rate limiting: at most 5 failures per 15 minutes per visitor IP ──
+    let ip = crate::limits::client_ip(&req);
 
     {
         let now = Instant::now();
@@ -974,9 +1003,22 @@ pub async fn ask(
         return HttpResponse::BadRequest()
             .json(ApiError::new(400, "Query tidak boleh kosong"));
     }
+    if let Err(wait) = state.limits.hit(&format!("user:{uid}"), USER_ASKS_PER_HOUR, HOUR) {
+        return too_many(format!(
+            "Batas {USER_ASKS_PER_HOUR} pertanyaan per jam tercapai. Coba lagi dalam {}.",
+            crate::limits::wait_text(wait)));
+    }
 
-    // Ambil atau buat session
-    let session_id = body.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    // Ambil atau buat session. An id that belongs to another user is never reused: the answer
+    // goes to a new session instead of overwriting theirs.
+    let mut session_id = body.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    if body.session_id.is_some() {
+        match state.db.session_owner(&session_id).await {
+            Ok(Some(owner)) if owner != uid => session_id = Uuid::new_v4().to_string(),
+            Ok(_) => {}
+            Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        }
+    }
     let session = state.db
         .get_session(&session_id, uid)
         .await
@@ -1001,7 +1043,8 @@ pub async fn ask(
     let retrieval = {
         let (state, query) = (state.clone(), body.query.clone());
         let (category, mode) = (body.category_filter.clone(), body.search_mode.clone());
-        let (top_k, max_sources) = (body.top_k.unwrap_or(tuning.candidates), tuning.max_sources);
+        let top_k = body.top_k.unwrap_or(tuning.candidates).clamp(1, MAX_TOP_K);
+        let max_sources = tuning.max_sources;
         async move { retrieve(&state, &query, category.as_deref(), mode.as_deref(), top_k, max_sources).await }
     };
 
@@ -1263,12 +1306,26 @@ pub async fn ask_public(
         return HttpResponse::BadRequest()
             .json(ApiError::new(400, "Query tidak boleh kosong"));
     }
+    // The guest token is made by the browser, so a new token is easy: also limit per IP and
+    // for all guests together.
+    let ip = crate::limits::client_ip(&req);
+    if let Err(wait) = state.limits.hit(&format!("guest-ip:{ip}"), GUEST_ASKS_PER_IP_PER_DAY, DAY) {
+        return too_many(format!(
+            "Batas pertanyaan tamu dari jaringan ini tercapai. Silakan daftar atau masuk, atau coba lagi dalam {}.",
+            crate::limits::wait_text(wait)));
+    }
+    if let Err(wait) = state.limits.hit("guest-all", guest_daily_limit(), DAY) {
+        return too_many(format!(
+            "Kuota pertanyaan tamu hari ini sudah habis. Silakan daftar atau masuk, atau coba lagi dalam {}.",
+            crate::limits::wait_text(wait)));
+    }
 
     let tuning = crate::settings::get(); // Admin → Settings; guests: at most 5 candidates and sources
     let start = Instant::now();
     let retrieval = {
         let (state, query, mode) = (state.clone(), body.query.clone(), body.search_mode.clone());
-        let (top_k, max_sources) = (body.top_k.unwrap_or(tuning.candidates.min(5)), tuning.max_sources.min(5));
+        let top_k = body.top_k.unwrap_or(tuning.candidates.min(5)).clamp(1, MAX_GUEST_TOP_K);
+        let max_sources = tuning.max_sources.min(5);
         async move { retrieve(&state, &query, None, mode.as_deref(), top_k, max_sources).await }
     };
 
@@ -1397,7 +1454,7 @@ pub async fn create_api_key_handler(
         .map(|p| p.iter().map(|s| s.as_str()).collect())
         .unwrap_or(default_perms);
 
-    let rate_limit = body.rate_limit.unwrap_or(30);
+    let rate_limit = body.rate_limit.unwrap_or(MAX_API_KEY_RATE as i32).clamp(1, MAX_API_KEY_RATE as i32);
 
     match state.db.create_api_key(
         uid,

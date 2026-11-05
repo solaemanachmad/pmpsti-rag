@@ -29,7 +29,7 @@ fn trigger_worker() -> bool {
     let branch = std::env::var("GITHUB_WORKER_REF").unwrap_or_else(|_| "main".into());
     actix_web::rt::spawn(async move {
         let url = format!("https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches");
-        let res = reqwest::Client::new()
+        let res = crate::limits::http_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(20), Some(std::time::Duration::from_secs(30)))
             .post(&url)
             .bearer_auth(token)
             .header("Accept", "application/vnd.github+json")

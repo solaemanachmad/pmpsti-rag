@@ -1,4 +1,3 @@
-use reqwest::Client;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -47,7 +46,7 @@ pub async fn send_verification_email(
     "#, verify_url = verify_url, base_url = base_url);
 
     let from = from_address();
-    let client = Client::new();
+    let client = crate::limits::http_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(20), Some(std::time::Duration::from_secs(30)));
     let payload = ResendEmail {
         from:    &from,
         to:      vec![to_email],
@@ -99,7 +98,7 @@ pub async fn send_password_reset_email(
     "#, reset_url = reset_url, base_url = base_url);
 
     let from = from_address();
-    let client = Client::new();
+    let client = crate::limits::http_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(20), Some(std::time::Duration::from_secs(30)));
     let payload = ResendEmail {
         from:    &from,
         to:      vec![to_email],
@@ -151,7 +150,7 @@ pub async fn send_welcome_email(
     "#, reset_url = reset_url, base_url = base_url);
 
     let from = from_address();
-    let client = Client::new();
+    let client = crate::limits::http_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(20), Some(std::time::Duration::from_secs(30)));
     let payload = ResendEmail {
         from:    &from,
         to:      vec![to_email],
