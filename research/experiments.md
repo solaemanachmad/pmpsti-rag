@@ -170,6 +170,77 @@ generation calls, so ~6 runs per day fit in the free tier.
 
 ---
 
+## E6 — All-Rust URL ingest (sections, acronyms, one embedding recipe) · 2026-11-05 · ingest `5098f0a`, eval code `e2aed85` / `0fcf08c`
+
+`20261105-0951_e6-retrieval.json` (retrieval), `20261105-1039_e6-e2e-run1.json`, `20261105-1107_e6-e2e-run2.json`,
+`20261105-2021_e6-e2e-run3.json` (end-to-end); `20261105-1018_e6-run1.json` = aborted run (see method notes).
+Database: Neon `test-embedding` (not frozen — see deviations), corpus fingerprint `f6f6c9ad7160`.
+
+Change (data + ingest code): every page of the E5 corpus re-ingested through the Rust Add-from-URL pipeline
+(`scripts/ingest_urls.py scripts/eval/e6_pages.tsv`), instead of Python `ingest.py` for the guidebook and Rust
+only for the table pages:
+- **Section paths**: text split at `h1`–`h3`, every chunk starts with its heading path
+  ("1 Pendahuluan > 1.1 Identitas Prodi > 1.1.4 Program Studi"); tables labelled with their section below
+  chapter level ("— 1.5 Analisis SWOT").
+- **Acronym expansion** in Rust from the shared `src/acronyms.json` (first 2 uses per section; an acronym
+  directly after "(" is left alone — fixes "…Informasi (Program Magister … (PMPSTI))").
+- **One embedding recipe** for Rust ingest, `ingest.py` and `regen_embeddings.py`: title + blank line +
+  content, title also sent as Gemini's `title` field (a Rust-stored vector and the Python recipe gave cosine
+  1.0). Batched embeds; one multi-row insert.
+- **Reader**: Graphviz flowcharts read as one line per box ("Buka simaster.ugm.ac.id") without node ids or
+  "A->B" edges; form controls (listing sort menu) skipped.
+- `appendix/a_cooperation` page replaces E5's hand-typed text summary of it.
+
+Corpus: 25 documents / 205 chunks as ingested (E5: 25 / 217). Deviations from a clean E6 corpus, because the
+branch was used by other work afterwards: introduction and preface re-read on 2026-10-18 by the
+website-sources pipeline (same Rust reader; the E6 copies archived), and two extra pages active
+(jteti.ugm.ac.id `pengelola`, `sejarah-dteti`, 9 chunks). Active corpus at measurement: 27 documents / 214
+chunks. 52 chunks were saved without embeddings on 2026-10-18 (daily embedding quota, see below) and filled
+with `regen_embeddings.py` (same recipe) before measuring.
+
+**Retrieval** (hybrid; 44 document / 24 answer questions; E5 = `20261018-0054_e5-after.json`):
+
+| | doc hit@1 | doc hit@5 | MRR | ans@5 |
+|---|---|---|---|---|
+| E5 | 86 % | 95 % | 0.90 | 96 % |
+| E6 | **91 %** | **98 %** | **0.93** | 92 % |
+
+Better: `editors` rank 3 → 1, `curr-profile` 3 → 1, `coop-docs-typo` not in top 10 → 1 (section paths, real
+cooperation page). Worse: `lect-who-en` 6 → not in top 10, `lect-list` 4 → 5, `tendik-count` 1 → 2 (the
+EWMP-vs-Tenaga-Pendidik competition seen in E5); ans@5 loses Q24 (curriculum by courses vs by research).
+
+**End-to-end** (backend from `main` + the per-IP guest limit override, debug build, `gemini-3.5-flash-lite`
+with model fallback):
+
+| Run | correct / valid answers | failures among valid answers | excluded |
+|---|---|---|---|
+| E5 run 1 | 24 / 26 | Q20, Q21 | — |
+| E6 run 1 | 18 / 19 | Q21 | 6 cut-off answers, 1 request error |
+| E6 run 2 | 22 / 24 | Q20, Q21 | 2 request errors (Gemini network/503) |
+| E6 run 3 | 21 / 24 | Q20, Q21, Q29 | 2 cut-off answers |
+
+Every failure on a valid answer is a keyword-scoring false negative: Q20 and Q21 (since E4), Q29 (the
+answer correctly says the S3 information is "belum tersedia"; the keywords accept only "tidak tersedia").
+Scored as the eval script reports it (cut-off answers counted as wrong): 18/25, 22/24, 21/26.
+
+Finding: ingesting everything through the Rust pipeline keeps answer quality at the E5 level and improves
+document retrieval (hit@1 +5, hit@5 +2 points); one answer-retrieval question is lost. Decision: Rust Add
+from URL (`ingest_urls.py`) is the way to build the web corpus, also for production.
+
+Method notes (for the paper and the next runs):
+- **Cut-off answers**: 8 of 78 answers (10 %) were returned with HTTP 200 but stopped mid-text
+  (`"**P"`, `"Halo! Saya As"`), clustered in time with Gemini 503 errors and model fallback. The eval counts
+  them as wrong answers; it should count them as request errors. Users see them too — to investigate.
+- The first e2e attempt (`20261105-1018_e6-run1.json`) stopped after 20 questions: the per-IP guest limit
+  added in PR #35 (20 per day) answered 429 to the eval. Fixed by `GUEST_IP_DAILY_LIMIT` (branch
+  `fix/eval-guest-ip-limit`); e2e runs must start the local backend with `GUEST_IP_DAILY_LIMIT=1000`.
+- Gemini free tier: **1,000 embeddings per day** per project (counted per chunk), besides ~500 generation
+  calls. A full corpus ingest is ~205 embeddings; repeated test ingests used up the day on 2026-10-18.
+- Release builds fail on macOS 27.2 + Rust 1.94.1 (release-built `sqlx-macros` cannot be loaded), so the
+  e2e backend was a debug build — same code and answers, slower.
+- Q29 needs "belum tersedia" in its keywords; Q20/Q21 remain the strongest argument for human or LLM
+  judging of answers (threats to validity).
+
 ## E10 — Misspelled questions: retrieval and grouping similar questions · 2026-11-04 · branch `feat/typo-eval` (`2eb39a2`)
 
 `20261104-2208_typos.json` (retrieval), `*_similarity.json` (grouping). Snapshot `eval-snapshot-2026-10-17`
