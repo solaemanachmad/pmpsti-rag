@@ -414,9 +414,11 @@ impl RagEngine {
 
     /// Merge the selected chunks into ONE context per document (= one source card;
     /// [n] in the answer = the n-th card), then add the surrounding context:
-    /// - List / Procedural: other chunks of the same document (original order), within budget
+    /// - List / Procedural: table summaries and the other chunks of the same document
+    ///   (original order), within budget; parts left out are marked `[… daftar berlanjut]`
     /// - otherwise        : the ±1 neighbours of every matched chunk
-    /// Matched chunks always come first — expansion can never push them out.
+    /// Matched chunks always come first — expansion can never push them out. The budget is
+    /// shared by rank (see `rank_share`), so the best document's list is the most complete.
     pub async fn build_context(&self, query_type: &QueryType, hits: &[&SearchResult]) -> Vec<SearchResult> {
         if hits.is_empty() {
             return vec![];
@@ -437,54 +439,30 @@ impl RagEngine {
         let doc_ids: Vec<String> = groups.iter().map(|(lead, _)| lead.document_id.clone()).collect();
         let all_chunks = self.search.db.fetch_all_chunks_for_documents(&doc_ids).await.unwrap_or_default();
         let versions = self.search.db.document_versions(&doc_ids).await.unwrap_or_default();
-        let per_doc_budget = budget_chars / groups.len();
 
-        groups.into_iter().map(|(lead, hit_idxs)| {
-            let doc_chunks: Vec<&SearchResult> = all_chunks.iter()
+        let docs = groups.len();
+        let mut remaining = budget_chars;
+        let mut out = Vec::with_capacity(docs);
+        for (rank, (lead, hit_idxs)) in groups.into_iter().enumerate() {
+            let doc: Vec<(i32, &str)> = all_chunks.iter()
                 .filter(|c| c.document_id == lead.document_id)
+                .map(|c| (c.chunk_index.unwrap_or(0), c.content.as_str()))
                 .collect();
-            let content_of = |i: i32| doc_chunks.iter()
-                .find(|c| c.chunk_index.unwrap_or(0) == i)
-                .map(|c| c.content.as_str());
+            let share = rank_share(remaining, rank, docs);
+            let chosen = pick_chunks(&doc, &hit_idxs, expand_whole_doc, share);
+            let used: usize = chosen.iter()
+                .filter_map(|i| doc.iter().find(|(j, _)| j == i))
+                .map(|(_, t)| t.len())
+                .sum();
+            remaining = remaining.saturating_sub(used);
 
-            // Priority: matched chunks → their neighbours → (List/Procedural) rest of the document
-            let mut priority: Vec<i32> = hit_idxs.clone();
-            for &i in &hit_idxs {
-                priority.extend([i - 1, i + 1]);
-            }
-            if expand_whole_doc {
-                priority.extend(doc_chunks.iter().map(|c| c.chunk_index.unwrap_or(0)));
-            }
-
-            let mut chosen: Vec<i32> = Vec::new();
-            let mut used = 0usize;
-            for i in priority {
-                if chosen.contains(&i) {
-                    continue;
-                }
-                let Some(text) = content_of(i) else { continue };
-                // Matched chunks always go in; expansion only while the budget allows
-                if !hit_idxs.contains(&i) && used + text.len() > per_doc_budget {
-                    continue;
-                }
-                used += text.len();
-                chosen.push(i);
-            }
-            chosen.sort_unstable();
-
-            let mut content = String::new();
-            for (n, &i) in chosen.iter().enumerate() {
-                if n > 0 {
-                    content.push_str(if i == chosen[n - 1] + 1 { "\n\n" } else { "\n\n[…]\n\n" });
-                }
-                content.push_str(content_of(i).unwrap_or_default());
-            }
+            let mut content = join_chunks(&doc, &chosen, expand_whole_doc);
             if content.is_empty() {
                 content = lead.content.clone(); // document not fetched: use the matched chunk itself
             }
             // Pages used (PDF sources) — shown on the source card and in the prompt for citations
             let mut pages: Vec<i32> = chosen.iter()
-                .filter_map(|&i| doc_chunks.iter().find(|c| c.chunk_index.unwrap_or(0) == i))
+                .filter_map(|&i| all_chunks.iter().find(|c| c.document_id == lead.document_id && c.chunk_index.unwrap_or(0) == i))
                 .filter_map(|c| c.page_number)
                 .collect();
             if pages.is_empty() {
@@ -493,8 +471,9 @@ impl RagEngine {
             pages.sort_unstable();
             pages.dedup();
             let version = versions.get(&lead.document_id).map(|v| v.describe()).unwrap_or_default();
-            SearchResult { content, pages, version, ..lead.clone() }
-        }).collect()
+            out.push(SearchResult { content, pages, version, ..lead.clone() });
+        }
+        out
     }
 
     /// Panggil LLM dengan chunks yang sudah difilter oleh handler.
@@ -589,7 +568,12 @@ impl RagEngine {
             Message { role: "system".to_string(), content: system_prompt.clone() },
         ];
         let history_window = if history.len() > 6 { &history[history.len() - 6..] } else { history };
-        messages.extend_from_slice(history_window);
+        // Earlier answers cite earlier sources: their [n] point at other documents than this
+        // turn's Konteks, and the model would copy them. Send those answers without the numbers.
+        messages.extend(history_window.iter().map(|m| Message {
+            role:    m.role.clone(),
+            content: if m.role == "assistant" { strip_citations(&m.content) } else { m.content.clone() },
+        }));
         messages.push(Message { role: "user".to_string(), content: user_message });
 
         (system_prompt, messages)
@@ -886,11 +870,201 @@ pub const NO_CONTEXT_ANSWER: &str = "Maaf, saya tidak menemukan informasi yang r
      dalam dokumen yang tersedia.";
 
 // ══════════════════════════════════════════════════════════════════
+//  CONTEXT SELECTION (used by `build_context`)
+// ══════════════════════════════════════════════════════════════════
+
+/// Shown where chunks of a list or procedure did not fit in the context, so the model says the
+/// list is incomplete instead of presenting part of it as everything (system prompt rule 10).
+pub const LIST_CONTINUES: &str = "[… daftar berlanjut]";
+
+/// A table summary chunk (total row count and every row's name, see `reader::table_chunks`).
+fn is_table_summary(text: &str) -> bool {
+    text.contains("\nJumlah data: ")
+}
+
+/// Characters for the document at `rank` (0 = best) out of `docs`, from what is left: weights
+/// 1, 1/2, 1/3 … over the documents not yet served. Budget a document does not use is left for
+/// the ones after it.
+fn rank_share(remaining: usize, rank: usize, docs: usize) -> usize {
+    let weight = |r: usize| 1.0 / (r as f64 + 1.0);
+    let rest: f64 = (rank..docs.max(rank + 1)).map(weight).sum();
+    (remaining as f64 * weight(rank) / rest) as usize
+}
+
+/// Positions of the chunks of one document (`doc` = (chunk_index, text)) that go into the
+/// context, sorted. Priority: matched chunks (always in) → table summaries (always in for whole-
+/// document questions) → ±1 neighbours → the rest of the document (whole-document questions),
+/// each while it fits in `budget` characters.
+fn pick_chunks(doc: &[(i32, &str)], hits: &[i32], whole_doc: bool, budget: usize) -> Vec<i32> {
+    let text = |i: i32| doc.iter().find(|(j, _)| *j == i).map(|(_, t)| *t);
+    let summaries: Vec<i32> = if whole_doc {
+        doc.iter().filter(|(_, t)| is_table_summary(t)).map(|(i, _)| *i).collect()
+    } else {
+        vec![]
+    };
+    let mut priority: Vec<(i32, bool)> = hits.iter().map(|&i| (i, true)).collect();
+    priority.extend(summaries.iter().map(|&i| (i, true)));
+    for &i in hits {
+        priority.extend([(i - 1, false), (i + 1, false)]);
+    }
+    if whole_doc {
+        priority.extend(doc.iter().map(|(i, _)| (*i, false)));
+    }
+
+    let mut chosen: Vec<i32> = Vec::new();
+    let mut used = 0usize;
+    for (i, always) in priority {
+        if chosen.contains(&i) {
+            continue;
+        }
+        let Some(t) = text(i) else { continue };
+        if !always && used + t.len() > budget {
+            continue;
+        }
+        used += t.len();
+        chosen.push(i);
+    }
+    chosen.sort_unstable();
+    chosen
+}
+
+/// The chosen chunks as one text. Gaps are marked "[…]"; for whole-document questions every
+/// part left out (between chunks or at the end) is marked `LIST_CONTINUES` instead.
+fn join_chunks(doc: &[(i32, &str)], chosen: &[i32], whole_doc: bool) -> String {
+    let text = |i: i32| doc.iter().find(|(j, _)| *j == i).map(|(_, t)| *t).unwrap_or_default();
+    let left_out = |from: i32, to: i32| doc.iter().any(|(j, _)| *j > from && *j < to);
+    let gap = if whole_doc { format!("\n\n{LIST_CONTINUES}\n\n") } else { "\n\n[…]\n\n".to_string() };
+    let mut content = String::new();
+    for (n, &i) in chosen.iter().enumerate() {
+        if n > 0 {
+            content.push_str(if left_out(chosen[n - 1], i) { &gap } else { "\n\n" });
+        }
+        content.push_str(text(i));
+    }
+    if whole_doc {
+        if let Some(&last) = chosen.last() {
+            if left_out(last, i32::MAX) {
+                content.push_str("\n\n");
+                content.push_str(LIST_CONTINUES);
+            }
+        }
+    }
+    content
+}
+
+/// The text without citation markers like "[2]", "[1, 3]" or "[1][2]" (and the space before
+/// them). Other brackets stay, e.g. Markdown links "[teks](url)" and "[…]".
+pub fn strip_citations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let close = after.find(']');
+        let is_citation = close.is_some_and(|c| {
+            let inner = &after[..c];
+            inner.chars().any(|ch| ch.is_ascii_digit())
+                && inner.chars().all(|ch| ch.is_ascii_digit() || ch == ',' || ch == ' ' || ch == '-' || ch == '–')
+                && !after[c + 1..].starts_with('(')
+        });
+        if is_citation {
+            out.push_str(rest[..open].trim_end_matches(' '));
+            rest = &after[close.unwrap() + 1..];
+        } else {
+            out.push_str(&rest[..=open]);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod citation_strip_tests {
+    use super::strip_citations;
+
+    #[test]
+    fn removes_citation_numbers_only() {
+        assert_eq!(strip_citations("Tesis 6 SKS [1]."), "Tesis 6 SKS.");
+        assert_eq!(strip_citations("Total 36 SKS [1, 3] dan tesis [2][4]"), "Total 36 SKS dan tesis");
+        assert_eq!(strip_citations("| Sunu | [2] |"), "| Sunu | |");
+        assert_eq!(strip_citations("lihat [halaman ini](https://x.id/a) dan […]"), "lihat [halaman ini](https://x.id/a) dan […]");
+        assert_eq!(strip_citations("[1](https://x.id) tetap"), "[1](https://x.id) tetap");
+        assert_eq!(strip_citations("kurung [a] dan [ ] tetap ["), "kurung [a] dan [ ] tetap [");
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    fn doc(texts: &[&'static str]) -> Vec<(i32, &'static str)> {
+        texts.iter().enumerate().map(|(i, t)| (i as i32, *t)).collect()
+    }
+
+    #[test]
+    fn budget_follows_rank_and_carries_over() {
+        // 3 documents: 6/11, then the rest split 3:2
+        assert_eq!(rank_share(11_000, 0, 3), 6_000);
+        assert_eq!(rank_share(5_000, 1, 3), 3_000);
+        assert_eq!(rank_share(2_000, 2, 3), 2_000);
+        // the first document used only 1 000: the others share the remaining 10 000
+        assert_eq!(rank_share(10_000, 1, 3), 6_000);
+        assert_eq!(rank_share(8_000, 0, 1), 8_000);
+    }
+
+    #[test]
+    fn matched_chunks_always_go_in() {
+        let d = doc(&["aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"]);
+        assert_eq!(pick_chunks(&d, &[2], false, 0), vec![2]);
+        // matched chunks count toward the budget: 10 + neighbour 10 = 20
+        assert_eq!(pick_chunks(&d, &[2], false, 19), vec![2]);
+        assert_eq!(pick_chunks(&d, &[2], false, 20), vec![1, 2]);
+    }
+
+    #[test]
+    fn list_keeps_the_table_summary_and_marks_what_is_left_out() {
+        let d = doc(&[
+            "Dosen\nJumlah data: 40. Nama: A, B, C …", // summary
+            "baris 1–10 ..........",
+            "baris 11–20 .........",
+            "baris 21–30 .........",
+            "baris 31–40 .........",
+        ]);
+        // hit on rows 21–30, budget for one more chunk: the summary is in even though over budget
+        let chosen = pick_chunks(&d, &[3], true, 21);
+        assert!(chosen.contains(&0) && chosen.contains(&3), "{chosen:?}");
+        assert!(chosen.len() < d.len());
+        let text = join_chunks(&d, &chosen, true);
+        assert!(text.starts_with("Dosen\nJumlah data: 40."));
+        assert!(text.contains(LIST_CONTINUES), "{text}");
+        // whole document fits: no marker
+        let all = pick_chunks(&d, &[3], true, 10_000);
+        assert_eq!(all, vec![0, 1, 2, 3, 4]);
+        assert!(!join_chunks(&d, &all, true).contains(LIST_CONTINUES));
+    }
+
+    #[test]
+    fn tail_left_out_is_marked_for_lists_only() {
+        let d = doc(&["satu", "dua", "tiga"]);
+        assert_eq!(join_chunks(&d, &[0, 1], true), format!("satu\n\ndua\n\n{LIST_CONTINUES}"));
+        assert_eq!(join_chunks(&d, &[0, 1], false), "satu\n\ndua");
+        assert_eq!(join_chunks(&d, &[0, 2], false), "satu\n\n[…]\n\ntiga");
+    }
+
+    #[test]
+    fn non_list_questions_ignore_table_summaries() {
+        let d = doc(&["T\nJumlah data: 3. Nama: X, Y, Z", "isi", "lain"]);
+        assert_eq!(pick_chunks(&d, &[2], false, 7), vec![1, 2]);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════
 //  PROMPT BUILDERS
 // ══════════════════════════════════════════════════════════════════
 
 fn build_system_prompt() -> String {
-    "Kamu adalah Asisten Akademik PMPSTI (Program Magister Teknik Sistem Informasi) \
+    "Kamu adalah Asisten Akademik PMPSTI (Program Magister Program Studi Teknologi Informasi), \
+     Departemen Teknik Elektro dan Teknologi Informasi, Fakultas Teknik, \
      Universitas Gadjah Mada yang pintar dan ramah. \
      \n\nAturan:\n\
      1. Untuk pertanyaan seputar akademik, kurikulum, dokumen kampus, atau informasi PMPSTI: \
@@ -915,7 +1089,11 @@ fn build_system_prompt() -> String {
         (misalnya jumlah SKS), pakai sumber dengan baris \"Versi\" yang paling baru \
         (tanggal berlaku terbaru) sebagai jawaban utama, lalu sebutkan singkat bahwa versi lama \
         menyebut nilai lain, keduanya dengan nomor sumbernya. Jika versinya tidak diketahui, \
-        sebutkan kedua nilai dan sarankan konfirmasi ke program studi."
+        sebutkan kedua nilai dan sarankan konfirmasi ke program studi.\n\
+     10. DAFTAR TERPOTONG: Penanda \"[… daftar berlanjut]\" di Konteks berarti dokumen itu \
+        berisi lebih banyak entri daripada yang dimuat. Tampilkan semua entri yang ada, lalu \
+        katakan bahwa daftarnya belum lengkap dan arahkan pengguna ke sumber [nomor] untuk daftar \
+        lengkap. Jangan menyebut jumlah total kecuali Konteks menyebutnya (misalnya \"Jumlah data\")."
         .to_string()
 }
 fn build_user_message(query: &str, context: &str, clarification_hint: &str) -> String {
