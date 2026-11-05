@@ -353,6 +353,8 @@ impl Database {
             "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT ''",
             // Set when an admin marks an unanswered question as handled
             "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ",
+            // The answer stopped at maxOutputTokens (it carries rag::TRUNCATED_NOTE)
+            "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS truncated BOOLEAN NOT NULL DEFAULT false",
             "CREATE INDEX IF NOT EXISTS query_logs_outcome_idx ON query_logs(outcome, created_at DESC)",
             // Similar questions (typos, other wording) share a group_id: the id of the first question
             // of the group. The embedding is the one made for the search (no extra Gemini call).
@@ -749,6 +751,7 @@ impl Database {
         session_id:        Option<&str>,
         user_id:           Option<i64>,
         outcome:           &str,
+        truncated:         bool,
         embedding:         Option<Vec<f32>>,
     ) -> Result<()> {
         let embedding = embedding.map(Vector::from);
@@ -756,8 +759,8 @@ impl Database {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO query_logs
                 (query_text, detected_language, detected_domain,
-                 num_results, top_score, search_time_ms, session_id, user_id, outcome, embedding, group_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 num_results, top_score, search_time_ms, session_id, user_id, outcome, embedding, group_id, truncated)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              RETURNING id",
         )
         .bind(query_text)
@@ -771,6 +774,7 @@ impl Database {
         .bind(outcome)
         .bind(embedding)
         .bind(group_id)
+        .bind(truncated)
         .fetch_one(&self.pool)
         .await?;
         if group_id.is_none() {
@@ -2232,6 +2236,8 @@ pub struct AdminQueryLog {
     pub outcome:         String,
     /// questions in the same similarity group within the filter (this one included)
     pub similar:         i64,
+    /// the answer stopped at maxOutputTokens
+    pub truncated:       bool,
 }
 
 /// Filters of Admin → Query Logs ('' / 0 = no filter).
@@ -2323,7 +2329,7 @@ impl Database {
 
         let rows = sqlx::query(&format!(
             "SELECT id, query_text, detected_language, num_results, search_time_ms,
-                    user_id IS NULL AS guest, created_at::text, outcome,
+                    user_id IS NULL AS guest, created_at::text, outcome, truncated,
                     COUNT(*) OVER (PARTITION BY COALESCE(group_id, id)) AS similar
              FROM query_logs {filter}
              ORDER BY created_at DESC
@@ -2342,6 +2348,7 @@ impl Database {
             created_at:       r.get("created_at"),
             outcome:          r.get("outcome"),
             similar:          r.get("similar"),
+            truncated:        r.get("truncated"),
         }).collect();
 
         Ok((logs, total))
