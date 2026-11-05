@@ -182,16 +182,6 @@ struct GeminiGenerationConfig {
     temperature:       f32,
 }
 
-#[derive(Deserialize)]
-struct GeminiResponse {
-    candidates: Vec<GeminiCandidate>,
-}
-
-#[derive(Deserialize)]
-struct GeminiCandidate {
-    content: GeminiContent,
-}
-
 // ══════════════════════════════════════════════════════════════════
 //  QUERY TYPE
 // ══════════════════════════════════════════════════════════════════
@@ -695,26 +685,43 @@ impl RagEngine {
                 if !try_next_model(status.as_u16()) { break; }
                 continue;
             }
-            let mut full = String::new();
+            let mut answer = GeminiAnswer::default();
             let mut buf: Vec<u8> = Vec::new();
-            let take_lines = |buf: &mut Vec<u8>, full: &mut String, last: bool| {
+            let take_lines = |buf: &mut Vec<u8>, answer: &mut GeminiAnswer, last: bool| {
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n').or(if last && !buf.is_empty() { Some(buf.len() - 1) } else { None }) {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
-                    if let Some(text) = sse_text(&String::from_utf8_lossy(&line)) {
-                        full.push_str(&text);
-                        let _ = tx.send(text);
+                    if let Some(piece) = sse_piece(&String::from_utf8_lossy(&line)) {
+                        if !piece.text.is_empty() { let _ = tx.send(piece.text.clone()); }
+                        answer.add(piece);
                     }
                 }
             };
-            while let Some(chunk) = resp.chunk().await? {
-                buf.extend_from_slice(&chunk);
-                take_lines(&mut buf, &mut full, false);
+            loop {
+                match resp.chunk().await {
+                    Ok(Some(chunk)) => {
+                        buf.extend_from_slice(&chunk);
+                        take_lines(&mut buf, &mut answer, false);
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        answer.error.get_or_insert(format!("connection lost: {e}"));
+                        break;
+                    }
+                }
             }
-            take_lines(&mut buf, &mut full, true);
-            if full.trim().is_empty() {
-                return Err(anyhow::anyhow!("Gemini returned an empty answer ({model})"));
+            take_lines(&mut buf, &mut answer, true);
+            let sent_text = !answer.text.is_empty();
+            match answer.finish(&model) {
+                Ok(text) => return Ok(text),
+                // Nothing shown yet: the next model can still give the whole answer.
+                Err(e) if !sent_text => {
+                    log::warn!("[llm] {e} — trying the next model");
+                    last_err = anyhow::anyhow!(e);
+                }
+                // Part of the answer already went to the client: report an error instead of
+                // ending as if the cut-off text were the full answer.
+                Err(e) => return Err(anyhow::anyhow!(e)),
             }
-            return Ok(full);
         }
         Err(last_err)
     }
@@ -724,29 +731,33 @@ impl RagEngine {
         let req = gemini_request(system_prompt, messages, max_tokens)?;
 
         let mut last_err = anyhow::anyhow!("no Gemini model configured");
-        let mut ok = None;
         for model in models.iter().cloned() {
             let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
             let resp = self.http.post(&url).header("x-goog-api-key", &self.llm.api_key).json(&req).send().await?;
             let status = resp.status();
-            if status.is_success() {
-                ok = Some(resp);
-                break;
+            if !status.is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                if status.as_u16() == 429 { mark_exhausted(&model, &body); }
+                last_err = anyhow::anyhow!("Gemini API error {} ({}): {}", status, model, body);
+                if !try_next_model(status.as_u16()) { break; }
+                continue;
             }
-            let body = resp.text().await.unwrap_or_default();
-            if status.as_u16() == 429 { mark_exhausted(&model, &body); }
-            last_err = anyhow::anyhow!("Gemini API error {} ({}): {}", status, model, body);
-            if !try_next_model(status.as_u16()) { break; }
+            // HTTP 200 does not mean a whole answer: check finishReason, and on a broken
+            // answer try the next model instead of returning the partial text.
+            let mut answer = GeminiAnswer::default();
+            match resp.json::<serde_json::Value>().await {
+                Ok(v)  => answer.add(gemini_piece(&v)),
+                Err(e) => answer.error = Some(format!("unreadable response: {e}")),
+            }
+            match answer.finish(&model) {
+                Ok(text) => return Ok(text),
+                Err(e) => {
+                    log::warn!("[llm] {e} — trying the next model");
+                    last_err = anyhow::anyhow!(e);
+                }
+            }
         }
-        let Some(resp) = ok else { return Err(last_err) };
-
-        let data: GeminiResponse = resp.json().await?;
-        data.candidates
-            .into_iter()
-            .next()
-            .and_then(|c| c.content.parts.into_iter().next())
-            .map(|p| p.text)
-            .ok_or_else(|| anyhow::anyhow!("Gemini returned empty response"))
+        Err(last_err)
     }
 }
 
@@ -775,13 +786,73 @@ fn gemini_request(system_prompt: &str, messages: &[Message], max_tokens: u32) ->
     })
 }
 
-/// Text of one SSE line from `streamGenerateContent` ("data: {…}"); None for other lines.
-fn sse_text(line: &str) -> Option<String> {
+/// What one Gemini response object says: the whole reply of `generateContent`, or one
+/// event of `streamGenerateContent`. Read as JSON values, so parts without text
+/// (e.g. `thoughtSignature`) do not break parsing.
+#[derive(Debug, Default, PartialEq)]
+struct GeminiPiece {
+    text:   String,
+    finish: Option<String>,
+    error:  Option<String>,
+}
+
+fn gemini_piece(v: &serde_json::Value) -> GeminiPiece {
+    let cand = &v["candidates"][0];
+    // All text parts, not only the first: Gemini may split one answer into several parts.
+    // Thought summaries ("thought": true) are not part of the answer.
+    let text = cand["content"]["parts"].as_array()
+        .map(|parts| parts.iter()
+            .filter(|p| p["thought"].as_bool() != Some(true))
+            .filter_map(|p| p["text"].as_str())
+            .collect())
+        .unwrap_or_default();
+    let error = v.get("error").map(|e| format!("{} {}", e["code"], e["message"].as_str().unwrap_or("")))
+        .or_else(|| v["promptFeedback"]["blockReason"].as_str().map(|r| format!("prompt blocked: {r}")));
+    GeminiPiece { text, finish: cand["finishReason"].as_str().map(str::to_string), error }
+}
+
+/// One SSE line from `streamGenerateContent` ("data: {…}"); None for other lines.
+fn sse_piece(line: &str) -> Option<GeminiPiece> {
     let data = line.trim().strip_prefix("data:")?.trim();
-    let v: serde_json::Value = serde_json::from_str(data).ok()?;
-    let text: String = v["candidates"][0]["content"]["parts"].as_array()?
-        .iter().filter_map(|p| p["text"].as_str()).collect();
-    (!text.is_empty()).then_some(text)
+    serde_json::from_str(data).ok().map(|v| gemini_piece(&v))
+}
+
+/// A Gemini answer put together from its pieces.
+#[derive(Default)]
+struct GeminiAnswer {
+    text:   String,
+    finish: Option<String>,
+    error:  Option<String>,
+}
+
+impl GeminiAnswer {
+    fn add(&mut self, piece: GeminiPiece) {
+        self.text.push_str(&piece.text);
+        if piece.finish.is_some() { self.finish = piece.finish; }
+        if piece.error.is_some() { self.error = piece.error; }
+    }
+
+    /// The text only when the model said it finished. A missing finishReason (stream cut off),
+    /// an error event, or a stop for SAFETY / RECITATION / OTHER means a broken answer.
+    /// MAX_TOKENS is kept: it is a long answer cut at the configured limit, and the next
+    /// model has the same limit.
+    fn finish(self, model: &str) -> std::result::Result<String, String> {
+        if let Some(e) = self.error {
+            return Err(format!("Gemini error during the answer ({model}): {e}"));
+        }
+        if self.text.trim().is_empty() {
+            return Err(format!("Gemini returned an empty answer ({model}, finishReason {:?})", self.finish));
+        }
+        match self.finish.as_deref() {
+            Some("STOP") => Ok(self.text),
+            Some("MAX_TOKENS") => {
+                log::warn!("[llm] {model} answer hit maxOutputTokens — consider raising max_tokens");
+                Ok(self.text)
+            }
+            None => Err(format!("Gemini answer stopped before it finished ({model}, no finishReason)")),
+            Some(other) => Err(format!("Gemini answer incomplete ({model}, finishReason {other})")),
+        }
+    }
 }
 
 /// Answer when no document matched (no LLM call).
@@ -836,12 +907,71 @@ fn build_user_message(query: &str, context: &str, clarification_hint: &str) -> S
 mod model_chain_tests {
     use super::*;
 
+    fn stream(lines: &[&str]) -> GeminiAnswer {
+        let mut a = GeminiAnswer::default();
+        for l in lines { if let Some(p) = sse_piece(l) { a.add(p); } }
+        a
+    }
+
     #[test]
     fn reads_text_from_stream_lines() {
         let line = r#"data: {"candidates":[{"content":{"parts":[{"text":"Tesis "},{"text":"6 SKS"}],"role":"model"}}]}"#;
-        assert_eq!(sse_text(line).as_deref(), Some("Tesis 6 SKS"));
-        assert_eq!(sse_text(r#"data: {"candidates":[{"finishReason":"STOP"}]}"#), None);
-        assert_eq!(sse_text(""), None);
+        assert_eq!(sse_piece(line).unwrap().text, "Tesis 6 SKS");
+        assert_eq!(sse_piece(r#"data: {"candidates":[{"finishReason":"STOP"}]}"#).unwrap().finish.as_deref(), Some("STOP"));
+        assert_eq!(sse_piece(""), None);
+    }
+
+    #[test]
+    fn whole_stream_with_stop_is_the_answer() {
+        let a = stream(&[
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"Halo! Saya As"}]}}]}"#,
+            "",
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"isten Akademik."}]},"finishReason":"STOP"}]}"#,
+        ]);
+        assert_eq!(a.finish("m").unwrap(), "Halo! Saya Asisten Akademik.");
+    }
+
+    #[test]
+    fn cut_off_stream_is_an_error_not_an_answer() {
+        // E6 eval: HTTP 200, text stops mid-word, no finishReason (connection dropped / 503)
+        let a = stream(&[r#"data: {"candidates":[{"content":{"parts":[{"text":"Halo! Saya As"}]}}]}"#]);
+        assert!(a.finish("m").unwrap_err().contains("no finishReason"));
+        // An error event in the middle of the stream
+        let a = stream(&[
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"**P"}]}}]}"#,
+            r#"data: {"error":{"code":503,"message":"The model is overloaded.","status":"UNAVAILABLE"}}"#,
+        ]);
+        assert!(a.finish("m").unwrap_err().contains("503"));
+        // Stopped for another reason than STOP / MAX_TOKENS
+        let a = stream(&[r#"data: {"candidates":[{"content":{"parts":[{"text":"Pendaftaran ujian"}]},"finishReason":"OTHER"}]}"#]);
+        assert!(a.finish("m").unwrap_err().contains("OTHER"));
+    }
+
+    #[test]
+    fn non_stream_reply_joins_all_parts_and_skips_thoughts() {
+        // generateContent may split one answer into several parts; only parts[0] was kept before
+        let v = serde_json::json!({"candidates":[{"content":{"role":"model","parts":[
+            {"text":"thinking…","thought":true},
+            {"text":"**P"},
+            {"text":"rasyarat** tesis: 6 SKS [1]."},
+            {"thoughtSignature":"abc"}
+        ]},"finishReason":"STOP"}]});
+        let mut a = GeminiAnswer::default();
+        a.add(gemini_piece(&v));
+        assert_eq!(a.finish("m").unwrap(), "**Prasyarat** tesis: 6 SKS [1].");
+    }
+
+    #[test]
+    fn max_tokens_is_kept_but_empty_or_blocked_is_not() {
+        let mut a = GeminiAnswer::default();
+        a.add(gemini_piece(&serde_json::json!({"candidates":[{"content":{"parts":[{"text":"| No | Nama |"}]},"finishReason":"MAX_TOKENS"}]})));
+        assert!(a.finish("m").is_ok());
+        let mut a = GeminiAnswer::default();
+        a.add(gemini_piece(&serde_json::json!({"candidates":[{"finishReason":"STOP"}]})));
+        assert!(a.finish("m").unwrap_err().contains("empty"));
+        let mut a = GeminiAnswer::default();
+        a.add(gemini_piece(&serde_json::json!({"promptFeedback":{"blockReason":"SAFETY"}})));
+        assert!(a.finish("m").unwrap_err().contains("blocked"));
     }
 
     #[test]
