@@ -145,6 +145,20 @@ impl ApiError {
         Self { success: false, error: error.into(), code }
     }
 }
+
+/// What the client sees when something fails inside the server. Database and Gemini errors
+/// can show SQL, table, model and host names, so their details go to the log only.
+pub const SERVER_ERROR_MESSAGE: &str = "Terjadi kesalahan di server. Silakan coba lagi.";
+/// What the student sees when the answer could not be written (Gemini failed or was cut off).
+pub const ANSWER_ERROR_MESSAGE: &str = "Gagal mendapat jawaban. Silakan coba lagi sebentar lagi.";
+
+/// 500 with a generic message; the real error is logged with the caller's file and line.
+#[track_caller]
+pub fn internal_error(e: impl std::fmt::Display) -> actix_web::HttpResponse {
+    let at = std::panic::Location::caller();
+    log::error!("[{}:{}] {e}", at.file(), at.line());
+    actix_web::HttpResponse::InternalServerError().json(ApiError::new(500, SERVER_ERROR_MESSAGE))
+}
 // ══════════════════════════════════════════════════════════════════
 //  DOCUMENT INGEST REQUESTS
 // ══════════════════════════════════════════════════════════════════
@@ -231,4 +245,19 @@ pub struct IngestResponse {
     pub document_id: String,
     pub chunks:      usize,
     pub title:       String,
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[actix_web::test]
+    async fn server_errors_hide_the_details() {
+        let res = internal_error("error returned from database: relation \"users\" does not exist");
+        assert_eq!(res.status(), 500);
+        let body = actix_web::body::to_bytes(res.into_body()).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains(SERVER_ERROR_MESSAGE));
+        assert!(!text.contains("relation") && !text.contains("users"));
+    }
 }

@@ -49,11 +49,15 @@ struct Config {
 /// The variable's value; stops the server when it is missing or shorter than `min_len`
 /// characters, instead of running with an unsafe default.
 fn required_env(name: &str, min_len: usize) -> String {
-    let value = std::env::var(name).unwrap_or_default().trim().to_string();
+    check_required(name, &std::env::var(name).unwrap_or_default(), min_len).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn check_required(name: &str, value: &str, min_len: usize) -> Result<String, String> {
+    let value = value.trim();
     if value.chars().count() < min_len {
-        panic!("{name} must be set (at least {min_len} characters); the server will not start without it");
+        return Err(format!("{name} must be set (at least {min_len} characters); the server will not start without it"));
     }
-    value
+    Ok(value.to_string())
 }
 
 impl Config {
@@ -189,6 +193,8 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
+    limits::set_allowed_origins(&[&cfg.frontend_url, &cfg.app_base_url]);
+
     let addr = format!("{}:{}", cfg.host, cfg.port);
     log::info!("Server siap di http://{}", addr);
 
@@ -224,6 +230,7 @@ async fn main() -> std::io::Result<()> {
                     ).into()
                 })
             )
+            .wrap(middleware::from_fn(limits::reject_cross_site))
             .wrap(middleware::Logger::default())
             .wrap(
                 actix_web::middleware::DefaultHeaders::new()
@@ -336,7 +343,16 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::mask_database_url;
+    use super::{check_required, mask_database_url};
+
+    #[test]
+    fn jwt_secret_must_be_long_enough() {
+        assert!(check_required("JWT_SECRET", "", 32).is_err());
+        assert!(check_required("JWT_SECRET", "   ", 32).is_err());
+        assert!(check_required("JWT_SECRET", "short-secret", 32).is_err());
+        let secret = "0123456789abcdef0123456789abcdef";
+        assert_eq!(check_required("JWT_SECRET", &format!(" {secret}\n"), 32).as_deref(), Ok(secret));
+    }
 
     #[test]
     fn masks_password_and_strips_query() {

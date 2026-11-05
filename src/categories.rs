@@ -248,7 +248,7 @@ impl CatError {
             CatError::BadRequest(m) => HttpResponse::BadRequest().json(ApiError::new(400, m)),
             CatError::NotFound => HttpResponse::NotFound().json(ApiError::new(404, "Category not found")),
             CatError::Conflict(m) => HttpResponse::Conflict().json(ApiError::new(409, m)),
-            CatError::Db(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e.to_string())),
+            CatError::Db(e) => crate::models::internal_error(e),
         }
     }
 }
@@ -414,7 +414,7 @@ pub async fn list_handler(req: HttpRequest, state: web::Data<AppState>) -> HttpR
             "categories": categories,
             "uncategorized": uncategorized,
         }))),
-        (Err(e), _) | (_, Err(e)) => HttpResponse::InternalServerError().json(ApiError::new(500, e.to_string())),
+        (Err(e), _) | (_, Err(e)) => crate::models::internal_error(e),
     }
 }
 
@@ -437,13 +437,13 @@ pub async fn set_document_category_handler(
         match exists(pool, id).await {
             Ok(true) => {}
             Ok(false) => return HttpResponse::BadRequest().json(ApiError::new(400, format!("Unknown category {id}"))),
-            Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(500, e.to_string())),
+            Err(e) => return crate::models::internal_error(e),
         }
     }
     match set_document_category(pool, &path.into_inner(), body.category_id).await {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new(404, "Document not found")),
         Ok(n) => HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "updated_chunks": n }))),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e.to_string())),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 

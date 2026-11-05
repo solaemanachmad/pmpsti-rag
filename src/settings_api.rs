@@ -41,7 +41,7 @@ pub async fn put_settings(req: HttpRequest, state: web::Data<AppState>, body: we
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new(snapshot(&state).await)),
         Err(e) if e.contains("must") || e.contains("model") || e.contains("at most") =>
             HttpResponse::BadRequest().json(ApiError::new(400, e)),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
@@ -50,7 +50,7 @@ pub async fn reset_settings(req: HttpRequest, state: web::Data<AppState>) -> Htt
     let claims = match require_admin(&req, &state) { Ok(c) => c, Err(r) => return r };
     match settings::reset(state.db.pool(), claims.sub.parse().ok()).await {
         Ok(_)  => HttpResponse::Ok().json(ApiSuccess::new(snapshot(&state).await)),
-        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(500, e)),
+        Err(e) => crate::models::internal_error(e),
     }
 }
 
