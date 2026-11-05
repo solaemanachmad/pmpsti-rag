@@ -535,8 +535,10 @@ pub fn prune_login_attempts(map: &DashMap<String, LoginAttempt>) {
 // ── Question limits (Gemini free tier: ~500 answers a day for everyone together) ──
 /// Signed-in users and API keys: questions per hour per user
 const USER_ASKS_PER_HOUR: u32 = 60;
-/// Guests: questions per day per IP address (on top of GUEST_QUOTA per browser)
-const GUEST_ASKS_PER_IP_PER_DAY: u32 = 20;
+/// Guests: questions per day per IP address (on top of GUEST_QUOTA per browser).
+/// Override with GUEST_IP_DAILY_LIMIT — e.g. 1000 on a local backend for end-to-end eval runs,
+/// which ask all test questions as guests from 127.0.0.1.
+const GUEST_ASKS_PER_IP_PER_DAY_DEFAULT: u32 = 20;
 /// Guests together: questions per day, so guests cannot use up the quota students need.
 /// Override with GUEST_DAILY_LIMIT.
 const GUEST_ASKS_PER_DAY_DEFAULT: u32 = 150;
@@ -549,8 +551,17 @@ const MAX_API_KEY_RATE: i64 = 30;
 const DAY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// A limit from an environment value: a positive whole number, otherwise `default`.
+fn limit_or(value: Option<String>, default: u32) -> u32 {
+    value.and_then(|v| v.trim().parse().ok()).filter(|&n: &u32| n > 0).unwrap_or(default)
+}
+
 fn guest_daily_limit() -> u32 {
-    std::env::var("GUEST_DAILY_LIMIT").ok().and_then(|v| v.parse().ok()).unwrap_or(GUEST_ASKS_PER_DAY_DEFAULT)
+    limit_or(std::env::var("GUEST_DAILY_LIMIT").ok(), GUEST_ASKS_PER_DAY_DEFAULT)
+}
+
+fn guest_ip_daily_limit() -> u32 {
+    limit_or(std::env::var("GUEST_IP_DAILY_LIMIT").ok(), GUEST_ASKS_PER_IP_PER_DAY_DEFAULT)
 }
 
 fn too_many(message: String) -> HttpResponse {
@@ -1309,7 +1320,7 @@ pub async fn ask_public(
     // The guest token is made by the browser, so a new token is easy: also limit per IP and
     // for all guests together.
     let ip = crate::limits::client_ip(&req);
-    if let Err(wait) = state.limits.hit(&format!("guest-ip:{ip}"), GUEST_ASKS_PER_IP_PER_DAY, DAY) {
+    if let Err(wait) = state.limits.hit(&format!("guest-ip:{ip}"), guest_ip_daily_limit(), DAY) {
         return too_many(format!(
             "Batas pertanyaan tamu dari jaringan ini tercapai. Silakan daftar atau masuk, atau coba lagi dalam {}.",
             crate::limits::wait_text(wait)));
@@ -2645,7 +2656,17 @@ pub async fn admin_ingest_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{cookie_attributes, extract_page, with_heading_path};
+    use super::{cookie_attributes, extract_page, limit_or, with_heading_path};
+
+    #[test]
+    fn limits_can_be_raised_but_bad_values_keep_the_default() {
+        assert_eq!(limit_or(None, 20), 20);
+        assert_eq!(limit_or(Some("1000".into()), 20), 1000);
+        assert_eq!(limit_or(Some(" 50 ".into()), 20), 50);
+        for bad in ["", "0", "-5", "many", "1.5"] {
+            assert_eq!(limit_or(Some(bad.into()), 20), 20, "{bad:?}");
+        }
+    }
 
     #[test]
     fn cookie_is_secure_except_on_local_http() {

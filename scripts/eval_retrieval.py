@@ -24,6 +24,8 @@ Metrics:
                              including out-of-scope questions that must be answered "not found".
                              Uses LLM quota (about 3 Gemini calls per question; the free tier
                              allows 500 per day). Request errors are excluded from the score.
+                             Start the local backend with GUEST_IP_DAILY_LIMIT=1000: guests may
+                             ask 20 questions per IP per day, and every eval question is a guest.
 Questions whose source is not ingested yet, or is out of scope, are counted separately.
 
 --typos scores every question three times: as written and in two misspelled versions (lower

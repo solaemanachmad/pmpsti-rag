@@ -85,6 +85,9 @@ JWT_SECRET=replace-with-a-long-random-secret
 # PROXY_SECRET=...
 # Guests together: questions per day (default 150)
 # GUEST_DAILY_LIMIT=150
+# Guests: questions per day per IP address (default 20). Raise it on a LOCAL backend for
+# end-to-end eval runs, which ask every test question as a guest from 127.0.0.1:
+# GUEST_IP_DAILY_LIMIT=1000
 
 # Optional: create or update an admin account on startup
 # ADMIN_EMAIL=you@mail.ugm.ac.id

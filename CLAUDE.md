@@ -19,7 +19,9 @@ This repository is **public**.
 - Rust: `cargo check`, `cargo test`, `cargo run` (needs root `.env`, `PORT=8080` locally).
 - Frontend: `cd frontend && npm run check && npm run dev`.
 - Python: `cd scripts && source .venv/bin/activate`; tests `python -m pytest -q worker/tests test_text_enrichment.py`.
-- Eval (read-only DB): `python scripts/eval_retrieval.py --label <name>`; end-to-end adds `--backend http://localhost:8080`.
+- Eval (read-only DB): `python scripts/eval_retrieval.py --label <name>`; end-to-end adds `--backend http://localhost:8080`
+  against a local backend started with `GUEST_IP_DAILY_LIMIT=1000 cargo run` (guests are limited to 20 questions
+  per IP per day; the eval asks every question as a guest).
 
 ## Workflow
 - Never commit to `main`. Branch `feat/…`, `fix/…`, `docs/…` → PR → Vercel Preview → merge.
