@@ -12,6 +12,8 @@ services:
         sync: false          # Set manually in Render dashboard
       - key: JWT_SECRET
         sync: false          # Set manually in Render dashboard
+      - key: PROXY_SECRET
+        sync: false          # Same value as PROXY_SECRET on Vercel (openssl rand -hex 32)
       - key: LLM_BACKEND
         value: openai        # Use OpenAI-compatible endpoint (Gemini)
       - key: LLM_MODEL

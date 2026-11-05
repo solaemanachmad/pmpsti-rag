@@ -1,4 +1,5 @@
 import type { RequestHandler } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
 
 const BACKEND = 'https://pmpsti-rag.onrender.com';
 
@@ -27,7 +28,7 @@ const SKIP_RESPONSE_HEADERS = new Set([
   'set-cookie',
 ]);
 
-async function proxy(request: Request, url: URL): Promise<Response> {
+async function proxy(request: Request, url: URL, clientAddress: string): Promise<Response> {
   // Use the path exactly as the browser sent it (still percent-encoded). The decoded
   // route param turns an encoded id like "chapter7%2Fgap%2Findex" back into real
   // slashes, which no backend route matches (404 with an empty body).
@@ -37,6 +38,15 @@ async function proxy(request: Request, url: URL): Promise<Response> {
   for (const h of REQUEST_HEADERS) {
     const val = request.headers.get(h);
     if (val) headers.set(h, val);
+  }
+  // Every request reaches the backend from a Vercel address, so tell it who the visitor is
+  // (login and question limits are per visitor). The backend trusts X-Real-IP only together
+  // with the shared PROXY_SECRET (server-side env var on Vercel and Render, never sent to the
+  // browser). Headers of the same name sent by the browser are not in REQUEST_HEADERS, so
+  // they are never passed on.
+  if (env.PROXY_SECRET && clientAddress) {
+    headers.set('X-Real-IP', clientAddress);
+    headers.set('X-Proxy-Secret', env.PROXY_SECRET);
   }
 
   const body = request.method !== 'GET' && request.method !== 'HEAD'
@@ -70,7 +80,11 @@ async function proxy(request: Request, url: URL): Promise<Response> {
   });
 }
 
-const handler: RequestHandler = ({ request, url }) => proxy(request, url);
+const handler: RequestHandler = ({ request, url, getClientAddress }) => {
+  let clientAddress = '';
+  try { clientAddress = getClientAddress(); } catch { /* not available in this environment */ }
+  return proxy(request, url, clientAddress);
+};
 
 export const GET = handler;
 export const POST = handler;

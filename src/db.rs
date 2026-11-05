@@ -1217,7 +1217,8 @@ impl Database {
              ON CONFLICT (id) DO UPDATE
              SET title = EXCLUDED.title,
                  messages = EXCLUDED.messages,
-                 updated_at = EXCLUDED.updated_at::timestamptz",
+                 updated_at = EXCLUDED.updated_at::timestamptz
+             WHERE chat_sessions.user_id = EXCLUDED.user_id",
         )
         .bind(&session.id)
         .bind(session.user_id)
@@ -1230,6 +1231,15 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         Ok(())
+    }
+
+    /// Who owns a chat session (None = no such session).
+    pub async fn session_owner(&self, session_id: &str) -> Result<Option<i64>, String> {
+        sqlx::query_scalar("SELECT user_id FROM chat_sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     pub async fn get_session(

@@ -6,6 +6,7 @@ mod draft_check;
 mod email;
 mod enrich;
 mod handlers;
+mod limits;
 mod models;
 mod rag;
 mod reader;
@@ -45,14 +46,24 @@ struct Config {
     frontend_url:   String,
 }
 
+/// The variable's value; stops the server when it is missing or shorter than `min_len`
+/// characters, instead of running with an unsafe default.
+fn required_env(name: &str, min_len: usize) -> String {
+    let value = std::env::var(name).unwrap_or_default().trim().to_string();
+    if value.chars().count() < min_len {
+        panic!("{name} must be set (at least {min_len} characters); the server will not start without it");
+    }
+    value
+}
+
 impl Config {
     fn from_env() -> Self {
         let _ = dotenvy::dotenv();
         Self {
-            database_url: std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgresql://admin:admin@localhost:5432/pmpsti_rag".to_string()),
-            jwt_secret: std::env::var("JWT_SECRET")
-                .unwrap_or_else(|_| "ganti-ini-dengan-secret-yang-aman-minimal-32-karakter".to_string()),
+            database_url: required_env("DATABASE_URL", 1),
+            // Signs login tokens: with a guessable secret anyone could make an admin token,
+            // so there is no default (this repository is public).
+            jwt_secret: required_env("JWT_SECRET", 32),
             host: std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
             port: std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(7860),
             llm_backend:    std::env::var("LLM_BACKEND").unwrap_or_else(|_| "ollama".to_string()),
@@ -149,6 +160,12 @@ async fn main() -> std::io::Result<()> {
     settings::init(db.pool(), settings::Settings::from_env(&llm_config.model)).await;
     let rag   = Arc::new(RagEngine::new(search, llm_config));
     let login_attempts = Arc::new(DashMap::new());
+    let limits = Arc::new(limits::Limiter::default());
+    if limits::proxy_secret_configured() {
+        log::info!("PROXY_SECRET set: the visitor IP from the frontend proxy is trusted");
+    } else {
+        log::warn!("PROXY_SECRET not set: limits use the connection address (fine locally; in production all visitors would share one limit)");
+    }
     let state = web::Data::new(AppState {
         db:             db.clone(),
         rag:            rag.clone(),
@@ -156,7 +173,21 @@ async fn main() -> std::io::Result<()> {
         resend_key:     cfg.resend_api_key.clone(),
         app_base_url:   cfg.app_base_url.clone(),
         login_attempts: login_attempts.clone(),
+        limits:         limits.clone(),
     });
+
+    // In-memory limit counters: drop ended windows every 10 minutes
+    {
+        let (limits, login_attempts) = (limits.clone(), login_attempts.clone());
+        actix_web::rt::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                every.tick().await;
+                limits.prune();
+                handlers::prune_login_attempts(&login_attempts);
+            }
+        });
+    }
 
     let addr = format!("{}:{}", cfg.host, cfg.port);
     log::info!("Server siap di http://{}", addr);

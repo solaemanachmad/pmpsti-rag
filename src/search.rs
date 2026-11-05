@@ -48,7 +48,7 @@ impl SearchEngine {
         Ok(Self {
             db,
             api_key,
-            http_client: Client::new(),
+            http_client: crate::limits::http_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(30), Some(std::time::Duration::from_secs(60))),
         })
     }
 

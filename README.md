@@ -76,8 +76,15 @@ DATABASE_URL=postgres://admin:admin@localhost:5432/pmpsti_rag
 HOST=0.0.0.0
 PORT=8080
 
-# Auth
+# Auth: required, at least 32 characters (the server refuses to start without it).
+# Generate with: openssl rand -hex 32
 JWT_SECRET=replace-with-a-long-random-secret
+
+# Production only: shared with the Vercel proxy so the backend can trust the visitor IP
+# (login and question limits are per visitor). Set the same value on Vercel and Render.
+# PROXY_SECRET=...
+# Guests together: questions per day (default 150)
+# GUEST_DAILY_LIMIT=150
 
 # Optional: create or update an admin account on startup
 # ADMIN_EMAIL=you@mail.ugm.ac.id

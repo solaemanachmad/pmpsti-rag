@@ -217,7 +217,8 @@ pub struct RagEngine {
 
 impl RagEngine {
     pub fn new(search: SearchEngine, llm: LlmConfig) -> Self {
-        Self { search, llm, http: Client::new() }
+        // Answers stream for a while, so no total limit; each chunk must arrive within 60 s
+        Self { search, llm, http: crate::limits::http_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(60), None) }
     }
 
     /// Answer model: Admin → Settings, else the one from the environment.
