@@ -76,6 +76,9 @@ changed with the selected columns (query plan). Three repeated runs at the secon
 (0.881). Finding: the RRF results served to guests depended on non-deterministic tie order — a further
 reason to drop RRF as the default.
 
+**Correction (E12, 2026-11-06):** the second value was a bug in the eval's `m_rrf` (keyword rows always
+empty, so RRF = semantic), not tie order; real RRF still scores 0.738. See E12.
+
 ## E3 — End-to-end before the fix · code `bb2e651` (= production until 2026-10-17)
 
 `20261017-2217_e2e-main.json` — backend built from `main`, same database.
@@ -316,6 +319,61 @@ ingest-only. Expansion stays off by default.
 
 Next (E11b): after real entries exist, add 1–2 test questions per entry (`"source": "log-abbrev"`) and
 compare off / on. Turn expansion on only if the abbreviation questions improve and the rest do not drop.
+
+## E12 — Answer quality fixes and the RRF eval bug · 2026-11-06 · branch `fix/answer-quality`
+
+`20261106-0511_rrf-fixed.json` (retrieval, snapshot `eval-snapshot-2026-10-17`),
+`20261106-0523_e12-base-e2e.json`, `20261106-0533_e12-base-e2e-run2.json` (end-to-end, `main` = `8b245cc`),
+`20261106-0545_e12-pr2-e2e.json` (end-to-end, this branch). End-to-end: Neon `test-embedding`, debug build,
+`gemini-3.5-flash-lite`; the per-IP guest limit raised to 1000 in the eval build only (26 questions from
+127.0.0.1). The eval script records commit `8b245cc` "dirty" for all three: the backend under test is named
+here. Base run 2 was meant as the branch run, but Cargo reused the `main` binary (shared target directory),
+so it is a second `main` run; the branch run used its own target directory, and the binary was checked to
+contain the new prompt.
+
+Changes:
+- **Eval bug, `m_rrf`**: the keyword rows were read after `m_semantic` had run its own query on the same
+  cursor, so they were always empty and every `rrf` row since the eval's first commit (`63fce1b`) is
+  semantic-only. Fixed (keyword rows read first).
+- **Programme name** in the system prompt: "Program Magister Teknik Sistem Informasi" →
+  "Program Magister Program Studi Teknologi Informasi", Departemen Teknik Elektro dan Teknologi
+  Informasi, Fakultas Teknik.
+- **Context budget by rank** (`build_context`): 8 000 / 14 000 characters were split evenly per document;
+  now weights 1, ½, ⅓ … and budget a document does not use goes to the next. List/procedure questions
+  always include the table summary chunk ("Jumlah data"), and parts left out are marked
+  `[… daftar berlanjut]` (new prompt rule 10: say the list is incomplete and point to the source).
+- **History**: [n] markers removed from earlier answers sent to the model (they pointed at other sources).
+
+**Retrieval** (42 document / 24 answer questions, snapshot):
+
+| Mode | doc hit@1 | doc hit@5 | MRR | ans@5 |
+|---|---|---|---|---|
+| rrf as reported before (= semantic) | 88 % | 98 % | 0.92 | 83 % |
+| rrf, fixed | 74 % | 93 % | 0.83 | 75 % |
+| hybrid (production, unchanged) | 90 % | 98 % | 0.93 | 88 % |
+
+Finding: real RRF is clearly worse than hybrid and semantic. This also explains **E2**: the 0.738 hit@1 of
+E0 was real RRF (31/42 — the same as today), and the "stable 0.881" was the semantic-only result of this
+bug (37/42), not a tie-order effect. E2's conclusion (drop RRF as the default) stands for a different
+reason; whether E1's `rrf_v2` / `rrf_w03` variants went through the same code is not recorded — re-run
+them before citing. Production (hybrid) is not affected.
+
+**End-to-end** (26 questions, keyword scoring):
+
+| Run | correct / answered | cut off |
+|---|---|---|
+| `main`, run 1 | 23 / 25 (92 %) | Q32 |
+| `main`, run 2 | 24 / 26 (92 %) | — |
+| this branch | 24 / 25 (96 %) | Q10 |
+
+Only three questions differ between runs, each consistent with run-to-run variation: Q21 (keyword false
+negative on `main` twice, correct on the branch), Q32 and Q10 (each cut off at MAX_TOKENS in one run only).
+Finding: no measurable change on this test set, as expected — no test question reaches the context budget
+for a list, and no answer mentioned an incomplete list. The programme name was checked by hand ("kamu
+asisten untuk program studi apa?": wrong name on `main`, right name on the branch). The history change
+is covered by unit tests only (the eval skips multi-turn questions; PR 4 adds them).
+
+Next: multi-turn and long-list test questions (e.g. the full lecturer list) to measure the budget change.
 
 ## Threats to validity (to address before publication)
 

@@ -1,0 +1,1144 @@
+{
+  "label": "e12-pr2-e2e",
+  "time": "20261106-0545",
+  "db_host": "ep-calm-dawn-b4n290kt-pooler.c-6.us-east-2.aws.neon.tech",
+  "meta": {
+    "git": {
+      "commit": "8b245cca322da415b50f68c861ff74a6c2cddb21",
+      "branch": "fix/answer-quality",
+      "dirty": true
+    },
+    "python": "3.14.4",
+    "embedding": {
+      "model": "gemini-embedding-001",
+      "dimensions": 768,
+      "query_task_type": "RETRIEVAL_QUERY",
+      "document_task_type": "RETRIEVAL_DOCUMENT"
+    },
+    "llm_for_e2e": {
+      "backend": "gemini",
+      "model": "gemini-3.5-flash-lite"
+    },
+    "expand_abbreviations": false,
+    "settings": {
+      "top_k": 10,
+      "answer_k": 5,
+      "e2e_pause_s": 8,
+      "hybrid_weights": [
+        0.7,
+        0.3
+      ],
+      "rrf_k": 60,
+      "ts_config": "indonesian"
+    },
+    "corpus": {
+      "chunks": 255,
+      "documents": 29,
+      "fingerprint_sha256": "f6f6c9ad71605f7d49dc776f99ddda2b9785048182cff7364716fe0758fcc1c8"
+    },
+    "test_sets": {
+      "questions.json": "74560afd0155a3a0812a69857e6b33537e246e4bef864761afd3c7050d3fea92",
+      "pertanyaan_uji.csv": "1e9e33cdd78e5f2b66b9778a6672ce9e7d5d479763c8a65a4dd80ccf58cbdd14"
+    },
+    "note": "e2e answers come from an LLM and vary between runs; repeat runs to report mean and spread."
+  },
+  "doc_summary": {
+    "semantic": {
+      "n": 44,
+      "hit@1": 0.9090909090909091,
+      "hit@5": 0.9772727272727273,
+      "mrr": 0.9356060606060606
+    },
+    "keyword": {
+      "n": 44,
+      "hit@1": 0.7045454545454546,
+      "hit@5": 0.9090909090909091,
+      "mrr": 0.7867424242424242
+    },
+    "hybrid": {
+      "n": 44,
+      "hit@1": 0.9090909090909091,
+      "hit@5": 0.9772727272727273,
+      "mrr": 0.9325757575757575
+    },
+    "rrf": {
+      "n": 44,
+      "hit@1": 0.8409090909090909,
+      "hit@5": 0.9772727272727273,
+      "mrr": 0.8965909090909091
+    }
+  },
+  "answer_summary": {
+    "semantic": 0.9166666666666666,
+    "keyword": 0.7916666666666666,
+    "hybrid": 0.9166666666666666,
+    "rrf": 0.9166666666666666
+  },
+  "doc_questions": [
+    {
+      "id": "coop-count",
+      "q": "berapa jumlah kerjasama PMPSTI?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 3,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "coop-list",
+      "q": "sebutkan semua 13 mitra kerjasama PMPSTI beserta periodanya",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "coop-partners",
+      "q": "siapa saja mitra kerjasama PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 2,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "coop-tunghai",
+      "q": "Tunghai University kerjasama PMPSTI",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "coop-docs-typo",
+      "q": "berapa jumlah dokumen kerjsamasa?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "coop-intl-en",
+      "q": "Which international partners does PMPSTI collaborate with?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": null,
+        "hybrid": 1,
+        "rrf": 4
+      }
+    },
+    {
+      "id": "lect-tumiran-prof",
+      "q": "Bapak Tumiran apakah sudah guru besar?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "lect-insap-field",
+      "q": "Apa bidang keilmuan P. Insap Santosa?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "lect-insap-rank",
+      "q": "Insap Santosa jabatan fungsional",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 3,
+        "keyword": 1,
+        "hybrid": 3,
+        "rrf": 2
+      }
+    },
+    {
+      "id": "lect-list",
+      "q": "daftar lengkap dosen PMPSTI nama NIP jabatan fungsional",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 3,
+        "keyword": 4,
+        "hybrid": 5,
+        "rrf": 3
+      }
+    },
+    {
+      "id": "lect-who-en",
+      "q": "Who are the professors teaching in PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": null,
+        "keyword": null,
+        "hybrid": null,
+        "rrf": 6
+      }
+    },
+    {
+      "id": "ewmp-rudy",
+      "q": "rata-rata ewmp Bapak Rudy Hartanto berapa?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "ewmp-what",
+      "q": "Apa itu EWMP dosen?",
+      "type": "policy",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "tendik-email",
+      "q": "Apa email Juni Paryadi?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "tendik-count",
+      "q": "Berapa jumlah tenaga kependidikan DTETI?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 2,
+        "keyword": 2,
+        "hybrid": 2,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "kbk-groups",
+      "q": "Apa saja Kelompok Bidang Keahlian (KBK) di PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "org-kaprodi",
+      "q": "Siapa ketua program studi PMPSTI?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 2,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "editors",
+      "q": "Siapa tim penyusun buku panduan akademik PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "curr-structure",
+      "q": "Struktur Kurikulum PMPSTI Berbasis Perkuliahan",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "curr-profile",
+      "q": "Apa profil lulusan PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "curr-credits",
+      "q": "Berapa SKS yang harus ditempuh untuk lulus magister PMPSTI?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "curr-cpl",
+      "q": "Apa saja capaian pembelajaran lulusan (CPL) PMPSTI?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "curr-credits-en",
+      "q": "How many credits do I need to graduate?",
+      "type": "count",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": null,
+        "hybrid": 1,
+        "rrf": 2
+      }
+    },
+    {
+      "id": "intro-identity",
+      "q": "Kapan program studi PMPSTI didirikan?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 5,
+        "hybrid": 1,
+        "rrf": 5
+      }
+    },
+    {
+      "id": "intro-accred",
+      "q": "Apa akreditasi program studi PMPSTI?",
+      "type": "lookup",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 3,
+        "hybrid": 1,
+        "rrf": 2
+      }
+    },
+    {
+      "id": "thesis-supervisor",
+      "q": "Bagaimana ketentuan dosen pembimbing tesis?",
+      "type": "policy",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "thesis-exam",
+      "q": "Bagaimana alur ujian tesis?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "sop-after-defense",
+      "q": "Apa yang harus dilakukan setelah sidang pendadaran?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "sop-graduation",
+      "q": "Bagaimana cara mendaftar wisuda?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "sop-library",
+      "q": "Bagaimana bebas pustaka dan unggah mandiri di Simaster?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-services",
+      "q": "Layanan persuratan akademik apa saja yang tersedia?",
+      "type": "list",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 2,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-leave",
+      "q": "izin cuti kuliah?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-leave-en",
+      "q": "How do I apply for academic leave?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": null,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-absence",
+      "q": "Bagaimana mengajukan izin tidak mengikuti perkuliahan?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-attendance",
+      "q": "Bagaimana cara klaim presensi?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-makeup",
+      "q": "Bagaimana prosedur pengajuan ujian susulan?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 2,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-skl",
+      "q": "Bagaimana mendapatkan surat keterangan lulus?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-judicium",
+      "q": "Bagaimana mengajukan surat keterangan yudisium?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-graddoc",
+      "q": "Bagaimana pengambilan dokumen wisuda?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-ethics",
+      "q": "Bagaimana mengajukan surat pengantar ethical clearance?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-skpi",
+      "q": "Bagaimana mengajukan aktivitas dan prestasi untuk SKPI?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-extend",
+      "q": "Bagaimana perpanjangan tugas belajar?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-title-change",
+      "q": "Bagaimana prosedur perubahan judul tesis?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    },
+    {
+      "id": "c7-reference",
+      "q": "Bagaimana meminta surat rekomendasi atau reference letter?",
+      "type": "procedure",
+      "ingested": true,
+      "ranks": {
+        "semantic": 1,
+        "keyword": 1,
+        "hybrid": 1,
+        "rrf": 1
+      }
+    }
+  ],
+  "answer_questions": [
+    {
+      "id": "Q01",
+      "q": "Apa kepanjangan PMPSTI?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q02",
+      "q": "Berapa IPK minimal untuk yudisium/lulus?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q03",
+      "q": "Berapa skor TOEFL atau AcEPT minimal untuk mendaftar ujian pendadaran?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q04",
+      "q": "Kapan pendaftaran ujian pra pendadaran dan pendadaran dibuka?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q05",
+      "q": "Berapa lama masa studi minimal dan maksimal program magister ini?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q06",
+      "q": "Kapan yudisium dilaksanakan dan kapan batas pendaftarannya?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q10",
+      "q": "Apa pakaian yang harus dipakai saat ujian pra pendadaran dan pendadaran?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q11",
+      "q": "Apa saja konsentrasi di PMPSTI?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q12",
+      "q": "Apa saja mata kuliah wajib konsentrasi HcSE?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q13",
+      "q": "Apa saja mata kuliah pilihan untuk konsentrasi Network and Cybersecurity?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "keyword": false,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q14",
+      "q": "Mata kuliah apa saja yang diambil di semester 1?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "keyword": false,
+        "hybrid": true,
+        "rrf": false
+      }
+    },
+    {
+      "id": "Q15",
+      "q": "Dokumen apa saja yang harus diunggah untuk mendaftar ujian pendadaran?",
+      "type": "daftar",
+      "found": {
+        "semantic": true,
+        "keyword": false,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q19",
+      "q": "Bagaimana cara mengajukan cuti kuliah dan apa syaratnya?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "keyword": false,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q20",
+      "q": "Bagaimana alur mengajukan izin tidak mengikuti perkuliahan?",
+      "type": "prosedur",
+      "found": {
+        "semantic": false,
+        "keyword": false,
+        "hybrid": false,
+        "rrf": false
+      }
+    },
+    {
+      "id": "Q21",
+      "q": "Bagaimana cara mengganti judul tesis jika pembimbingnya tetap sama?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q22",
+      "q": "Apa saja tahapan setelah sidang pendadaran sampai bisa wisuda?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q23",
+      "q": "Kapan batas akhir unggah ETD dan pendaftaran akun untuk ikut wisuda periode I?",
+      "type": "prosedur",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q24",
+      "q": "Apa perbedaan kurikulum berbasis perkuliahan dan berbasis riset?",
+      "type": "perbandingan",
+      "found": {
+        "semantic": false,
+        "keyword": true,
+        "hybrid": false,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q25",
+      "q": "Apa beda Ujian Pra Tesis dan Ujian Tesis?",
+      "type": "perbandingan",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q26",
+      "q": "Berapa total SKS untuk lulus magister TI?",
+      "type": "konflik_versi",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q27",
+      "q": "Berapa SKS bobot tesis?",
+      "type": "konflik_versi",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q31",
+      "q": "Apa email Juni Paryadi?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q32",
+      "q": "Berapa jumlah tenaga kependidikan (tendik) DTETI?",
+      "type": "hitung",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    },
+    {
+      "id": "Q33",
+      "q": "Berapa rata-rata EWMP Bapak Rudy Hartanto?",
+      "type": "fakta",
+      "found": {
+        "semantic": true,
+        "keyword": true,
+        "hybrid": true,
+        "rrf": true
+      }
+    }
+  ],
+  "e2e": {
+    "score": 0.96,
+    "answered": 25,
+    "errors": 1,
+    "cut_off": 1,
+    "not_run": 0,
+    "questions": [
+      {
+        "id": "Q01",
+        "type": "fakta",
+        "q": "Apa kepanjangan PMPSTI?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Tentu, saya bantu jelaskan ya. **PMPSTI** adalah singkatan dari **Program Magister Program Studi Teknologi Informasi** [1]. Berikut adalah beberapa poin penting mengenai PMPSTI di lingkungan Universitas Gadjah Mada: - **Lokasi & Naungan**: Berada di bawah Departemen Teknik Elektro dan Teknologi Informasi (DTETI), Fakultas Teknik, Universitas Gadjah Mada (UGM) [1]. - **Visi**: Menjadi sumber inovasi yang universal di bidang ilmu Teknologi Informasi untuk kepentingan bangsa dan kemanusiaan d",
+        "answer_end": "r akademik atau kurikulum PMPSTI yang ingin kamu tanyakan, silakan beri tahu ya!"
+      },
+      {
+        "id": "Q02",
+        "type": "fakta",
+        "q": "Berapa IPK minimal untuk yudisium/lulus?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Berdasarkan Buku Panduan Akademik PMPSTI, syarat Indeks Prestasi Kumulatif (IPK) minimal untuk kelulusan atau yudisium adalah **3,00** untuk jalur reguler dan **3,25** untuk jalur berbasis penelitian [1].",
+        "answer_end": "h **3,00** untuk jalur reguler dan **3,25** untuk jalur berbasis penelitian [1]."
+      },
+      {
+        "id": "Q03",
+        "type": "fakta",
+        "q": "Berapa skor TOEFL atau AcEPT minimal untuk mendaftar ujian pendadaran?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Saya asisten akademik PMPSTI yang siap membantu Anda. Terkait pertanyaan Anda mengenai skor kemampuan bahasa Inggris untuk mendaftar ujian pendadaran, berikut adalah ketentuannya: **Ketentuan Skor Bahasa Inggris:** - Skor minimal **AcEPT adalah 268**. - Skor minimal **TOEFL adalah 500**. **Prosedur bagi mahasiswa yang belum memenuhi skor tersebut:** Jika skor AcEPT Anda kurang dari 268 atau skor TOEFL kurang dari 500, Anda dapat mengajukan permohonan Surat Keterangan Keringanan dengan meng",
+        "answer_end": "u pada ugm.id/alurpersuratan (cek pada bagian keringanan TOEFL/TPA). Sumber: [1]"
+      },
+      {
+        "id": "Q04",
+        "type": "fakta",
+        "q": "Kapan pendaftaran ujian pra pendadaran dan pendadaran dibuka?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Berdasarkan Buku Panduan Akademik PMPSTI, pendaftaran ujian Pra dan Pendadaran online dibuka setiap tanggal 1 dan ditutup pada tanggal 10 setiap bulannya [1].",
+        "answer_end": " online dibuka setiap tanggal 1 dan ditutup pada tanggal 10 setiap bulannya [1]."
+      },
+      {
+        "id": "Q05",
+        "type": "fakta",
+        "q": "Berapa lama masa studi minimal dan maksimal program magister ini?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Berdasarkan Panduan Akademik PMPSTI, masa studi untuk program magister ini adalah: - **Masa studi paling singkat (minimal):** 3 semester [1]. - **Masa studi paling lama (maksimal):** 6 semester, dan dapat diperpanjang sesuai aturan yang berlaku [1]. Jika ada hal lain yang ingin ditanyakan seputar akademik PMPSTI, silakan tanyakan ya!",
+        "answer_end": "ada hal lain yang ingin ditanyakan seputar akademik PMPSTI, silakan tanyakan ya!"
+      },
+      {
+        "id": "Q06",
+        "type": "fakta",
+        "q": "Kapan yudisium dilaksanakan dan kapan batas pendaftarannya?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Saya asisten akademik PMPSTI. Dengan senang hati saya bantu menjawab pertanyaan Anda. Berdasarkan Buku Panduan Akademik PMPSTI, berikut adalah informasi mengenai pelaksanaan dan pendaftaran yudisium: 1. **Jadwal Pelaksanaan:** Yudisium dilaksanakan secara berkala setiap **hari Senin** setiap bulannya [1]. 2. **Batas Pendaftaran:** Pendaftaran yudisium paling lambat dilakukan pada **hari Rabu** sebelum pelaksanaan yudisium di hari Senin tersebut [1]. Pastikan Anda telah mendapatkan persetuj",
+        "answer_end": "asi ini membantu. Jika ada hal lain yang ingin ditanyakan, silakan sampaikan ya!"
+      },
+      {
+        "id": "Q10",
+        "type": "fakta",
+        "q": "Apa pakaian yang harus dipakai saat ujian pra pendadaran dan pendadaran?",
+        "ok": false,
+        "error": true,
+        "cut_off": true,
+        "answer": "Halo! Terkait pertanyaan Anda mengenai pakaian yang harus dikenakan saat ujian prapendadaran dan pendadaran di PMPSTI UGM, berikut adalah ketentuannya berdasarkan panduan akademik [1]: - **Pria**: Kemeja lengan panjang dan dasi [1]. - **Wanita**: Formal blazer dengan warna bebas [1]. Sumber: [1] Buku Panduan Akademik PMPSTI",
+        "answer_end": ": Formal blazer dengan warna bebas [1]. Sumber: [1] Buku Panduan Akademik PMPSTI"
+      },
+      {
+        "id": "Q11",
+        "type": "daftar",
+        "q": "Apa saja konsentrasi di PMPSTI?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Senang sekali bisa membantu Anda. Program Magister Program Studi Teknologi Informasi (PMPSTI) Departemen Teknik Elektro dan Teknologi Informasi (DTETI) UGM menawarkan **empat konsentrasi** utama dalam kurikulumnya [1][2]. Berikut adalah daftar lengkap konsentrasi yang tersedia di PMPSTI: | No | Konsentrasi (Nama Asing) | Nama dalam Bahasa Indonesia / Keterangan | | :--- | :--- | :--- | | 1 | **Human-centered Software Engineering (HcSE)** | Rekayasa Perangkat Lunak Berpusat pada Manusia (sp",
+        "answer_end": "r akademik atau kurikulum PMPSTI yang ingin Anda tanyakan, silakan beri tahu ya!"
+      },
+      {
+        "id": "Q12",
+        "type": "daftar",
+        "q": "Apa saja mata kuliah wajib konsentrasi HcSE?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Tentu, berikut adalah daftar mata kuliah wajib untuk konsentrasi **HcSE (Human-centered Software Engineering)** di PMPSTI [1]: | No. | Kode MK | Nama Mata Kuliah | SKS | Sifat | | --- | --- | --- | --- | --- | | 1 | TIF 256221 | Rekayasa Kebutuhan (Requirement Engineering) | 3 | Wajib Konsentrasi HcSE | | 2 | TIF 256222 | Arsitektur dan Perancangan Perangkat Lunak (Software Architecture and Design) | 3 | Wajib Konsentrasi HcSE | Sumber: [1] Buku Panduan Akademik PMPSTI. Jika ada hal lain y",
+        "answer_end": "ain yang ingin ditanyakan seputar kurikulum atau akademik, silakan beri tahu ya!"
+      },
+      {
+        "id": "Q13",
+        "type": "daftar",
+        "q": "Apa saja mata kuliah pilihan untuk konsentrasi Network and Cybersecurity?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Saya Asisten Akademik PMPSTI UGM yang siap membantu Anda. Berdasarkan dokumen panduan akademik, berikut adalah daftar lengkap mata kuliah pilihan untuk konsentrasi **Network and Cybersecurity (NC)** [1]: | No. | Kode MK | Nama Mata Kuliah | SKS | Sifat | | :--- | :--- | :--- | :--- | :--- | | 1 | TIF 257141 | Keamanan dan Integritas Data Lanjut (Advanced Data Security and Integrity) | 3 | Pilihan NC | | 2 | TIF 257142 | Keamanan Jaringan Komputer (Network Security) | 3 | Pilihan NC | | 3 |",
+        "answer_end": "m atau informasi akademik PMPSTI yang ingin Anda tanyakan, silakan sampaikan ya!"
+      },
+      {
+        "id": "Q14",
+        "type": "daftar",
+        "q": "Mata kuliah apa saja yang diambil di semester 1?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Saya Asisten Akademik PMPSTI UGM yang siap membantu Anda. Berdasarkan dokumen panduan akademik PMPSTI, berikut adalah daftar mata kuliah yang diambil pada **Semester 1** untuk kurikulum berbasis perkuliahan (*by course*): | No | Kode MK | Nama Mata Kuliah | Sifat | SKS | | :--- | :--- | :--- | :--- | :--- | | 1 | FTK 256102 | Kolaborasi dan Jejaring | Wajib Umum | 2 | | 2 | TIF 256101 | Perspektif tentang Informasi | Wajib Umum | 2 | | 3 | TIF 256102 | Statistika Lanjut | Wajib Umum | 2 | ",
+        "answer_end": "da hal lain seputar akademik PMPSTI yang ingin ditanyakan, silakan beri tahu ya!"
+      },
+      {
+        "id": "Q15",
+        "type": "daftar",
+        "q": "Dokumen apa saja yang harus diunggah untuk mendaftar ujian pendadaran?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Tentu, saya bantu informasikan dokumen yang harus diunggah untuk mendaftar ujian pendadaran berdasarkan panduan PMPSTI UGM. Berikut adalah daftar lengkap dokumen persyaratan yang harus diunggah untuk Ujian Pendadaran: 1. **Foto Resmi Berwarna** (format JPEG, JPG, PNG) [1]. 2. **Salinan Sertifikat AcEPT** skor minimal 268 (atau 500 untuk TOEFL) dalam format JPEG, JPG, PDF [1]. *(Bagi yang skor kurang dari batas minimal dapat mengajukan Surat Keterangan Keringanan dengan melampirkan 3 sertif",
+        "answer_end": "da hal lain yang ingin ditanyakan seputar akademik PMPSTI, silakan sampaikan ya!"
+      },
+      {
+        "id": "Q19",
+        "type": "prosedur",
+        "q": "Bagaimana cara mengajukan cuti kuliah dan apa syaratnya?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Saya asisten akademik PMPSTI. Saya akan membantu menjelaskan prosedur dan ketentuan terkait pengajuan cuti kuliah bagi mahasiswa Program Magister. ### **Ketentuan Akademik Cuti Kuliah** Sebelum mengajukan cuti, pastikan Anda memenuhi persyaratan berikut [1]: - Mahasiswa telah menempuh minimal 1 semester. - Telah menyelesaikan minimal 12 Satuan Kredit Semester (SKS). - Memiliki Indeks Prestasi Kumulatif (IPK) \u2265 3,00. - Cuti diajukan setiap semester dengan batas maksimal 2 semester. - Masa c",
+        "answer_end": "an menghubungi pihak program studi secara langsung. Semoga prosesnya lancar, ya!"
+      },
+      {
+        "id": "Q20",
+        "type": "prosedur",
+        "q": "Bagaimana alur mengajukan izin tidak mengikuti perkuliahan?",
+        "ok": false,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Tentu, saya akan bantu jelaskan prosedur pengajuan izin tidak mengikuti perkuliahan untuk mahasiswa Program Magister PMPSTI. Berikut adalah ketentuan dan alur pengajuannya: ### Ketentuan Penting - Pastikan dokumen lengkap, sesuai template, dan melampirkan bukti pendukung [1]. - Pengajuan untuk **lebih dari satu mata kuliah harus digabung dalam satu permohonan** [1]. - Setelah surat izin disetujui melalui aplikasi Persuratan FT, mahasiswa **tidak perlu** mengirim ulang dokumen ke email `tet",
+        "answer_end": "a hal lain yang ingin ditanyakan terkait layanan akademik, silakan sampaikan ya!"
+      },
+      {
+        "id": "Q21",
+        "type": "prosedur",
+        "q": "Bagaimana cara mengganti judul tesis jika pembimbingnya tetap sama?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Tentu, saya akan bantu jelaskan prosedur penggantian judul tesis dengan dosen pembimbing yang tetap sama. Berdasarkan Panduan Akademik PMPSTI, prosedur penggantian topik atau judul tesis dengan dosen pembimbing I dan II yang tidak berubah adalah sebagai berikut: 1. Mahasiswa mengajukan **surat permohonan pergantian Judul/Topik tesis** kepada program studi [1]. 2. Surat permohonan tersebut harus mendapat **persetujuan dan ditandatangani oleh kedua pembimbing** [1]. Selain prosedur di atas, ",
+        "answer_end": " Semoga membantu! Jika ada hal lain yang ingin ditanyakan, silakan sampaikan ya."
+      },
+      {
+        "id": "Q22",
+        "type": "prosedur",
+        "q": "Apa saja tahapan setelah sidang pendadaran sampai bisa wisuda?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Sebagai asisten akademik PMPSTI, saya akan membantu menjelaskan tahapan yang perlu Anda lalui setelah sidang pendadaran hingga proses wisuda. Berikut adalah tahapan dan ketentuan yang harus Anda perhatikan: ### **Ketentuan Penting Sebelum Memulai** * **Komunikasi:** Selalu buka pintu komunikasi dengan pihak prodi karena proses ini melibatkan koordinasi antara mahasiswa, prodi, universitas, dan PDDIKTI [1]. * **Etika:** Seluruh proses dapat dibatalkan jika di kemudian hari ditemukan pelangg",
+        "answer_end": "hak program studi secara langsung. Semoga proses kelulusan Anda berjalan lancar!"
+      },
+      {
+        "id": "Q23",
+        "type": "prosedur",
+        "q": "Kapan batas akhir unggah ETD dan pendaftaran akun untuk ikut wisuda periode I?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Berdasarkan panduan akademik PMPSTI, batas akhir penyelesaian unggah mandiri ETD Universitas Gadjah Mada (UGM) dan pendaftaran akun melalui SIMASTER di Prodi untuk mengikuti **wisuda periode I** adalah pada tanggal **19 September** [1].",
+        "answer_end": "i untuk mengikuti **wisuda periode I** adalah pada tanggal **19 September** [1]."
+      },
+      {
+        "id": "Q24",
+        "type": "perbandingan",
+        "q": "Apa perbedaan kurikulum berbasis perkuliahan dan berbasis riset?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Tentu, berikut adalah perbandingan antara kurikulum berbasis perkuliahan (*by course*) dan kurikulum berbasis riset (*by research*) di PMPSTI berdasarkan dokumen panduan akademik [1]: | Aspek Perbandingan | Kurikulum Berbasis Perkuliahan (PMPSTI) | Kurikulum Berbasis Riset (PMPSTI-BR) | | :--- | :--- | :--- | | **Dasar Skema** | Skema konvensional yang telah berjalan sebelumnya [1]. | Skema baru sesuai dengan Peraturan Rektor Universitas Gadjah Mada (UGM) No. 18 Tahun 2019 [1]. | | **Total",
+        "answer_end": "it silabus atau implementasi dari masing-masing skema ini, silakan sampaikan ya!"
+      },
+      {
+        "id": "Q25",
+        "type": "perbandingan",
+        "q": "Apa beda Ujian Pra Tesis dan Ujian Tesis?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Tentu, mari kita bandingkan antara Ujian Pra Tesis dan Ujian Tesis di PMPSTI berdasarkan dokumen panduan akademik [1]. Berikut adalah perbandingan antara Ujian Pra Tesis dan Ujian Tesis: | Aspek Perbandingan | Ujian Pra Tesis | Ujian Tesis | | :--- | :--- | :--- | | **Bobot SKS** | Berbobot 1 SKS [1]. | Berbobot 4 SKS [1]. | | **Waktu Pelaksanaan** | Dijadwalkan pada semester 4 [1]. | Dijadwalkan pada semester 4 [1]. | | **Prasyarat & Status Sebelumnya** | Dilaksanakan sesudah mahasiswa di",
+        "answer_end": "asih dilanjutkan dengan penilaian naskah revisi akhir oleh dosen pembimbing [1]."
+      },
+      {
+        "id": "Q26",
+        "type": "konflik_versi",
+        "q": "Berapa total SKS untuk lulus magister TI?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Berdasarkan dokumen panduan akademik PMPSTI, total SKS yang dibutuhkan untuk menyelesaikan program magister Teknologi Informasi adalah **36 SKS** [1][2]. Beban total SKS ini berlaku untuk kedua skema yang tersedia di PMPSTI, yaitu skema berbasis perkuliahan (*by course*) maupun skema berbasis riset (*by research*) [1]. Perubahan jumlah SKS ini merujuk pada pemutakhiran kurikulum yang mengakomodir ketentuan terbaru [2]. Jika Anda membutuhkan informasi lebih detail mengenai distribusi mata k",
+        "answer_end": "ai distribusi mata kuliah pada masing-masing skema, silakan tanyakan kembali ya!"
+      },
+      {
+        "id": "Q27",
+        "type": "konflik_versi",
+        "q": "Berapa SKS bobot tesis?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Berdasarkan Panduan Akademik PMPSTI, bobot untuk **Tesis** adalah **6 SKS** (yang meliputi naskah tesis, ujian pra tesis, ujian tesis, serta penilaian oleh dosen pembimbing) [1].",
+        "answer_end": "tesis, ujian pra tesis, ujian tesis, serta penilaian oleh dosen pembimbing) [1]."
+      },
+      {
+        "id": "Q28",
+        "type": "di_luar_cakupan",
+        "q": "Berapa biaya UKT per semester di PMPSTI?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Mohon maaf, informasi mengenai besaran biaya Uang Kuliah Tunggal (UKT) per semester di PMPSTI tidak tersedia dalam dokumen yang diindeks [1][2]. Untuk informasi lebih lanjut dan akurat mengenai biaya UKT, silakan menghubungi pihak Program Studi PMPSTI atau Departemen Teknik Elektro dan Teknologi Informasi (DTETI) UGM secara langsung melalui email di **teti@ugm.ac.id** [1] atau melalui laman resmi mereka.",
+        "answer_end": "angsung melalui email di **teti@ugm.ac.id** [1] atau melalui laman resmi mereka."
+      },
+      {
+        "id": "Q29",
+        "type": "di_luar_cakupan",
+        "q": "Bagaimana cara mendaftar program doktor (S3) di DTETI?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Saya adalah Asisten Akademik PMPSTI DTETI UGM yang siap membantu Anda. Maaf, informasi spesifik mengenai cara mendaftar program doktor (S3) di DTETI tidak tersedia dalam dokumen yang diindeks saat ini. Untuk informasi pendaftaran program S3 yang akurat dan terbaru, silakan menghubungi pihak program studi secara langsung melalui email resmi di **teti@ugm.ac.id** atau mengunjungi laman resmi Pascasarjana DTETI UGM di [https://pasca.jteti.ugm.ac.id/](https://pasca.jteti.ugm.ac.id/) [1].",
+        "answer_end": "ETI UGM di [https://pasca.jteti.ugm.ac.id/](https://pasca.jteti.ugm.ac.id/) [1]."
+      },
+      {
+        "id": "Q31",
+        "type": "fakta",
+        "q": "Apa email Juni Paryadi?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Berdasarkan data yang tersedia di PMPSTI, email Juni Paryadi adalah **juni@ugm.ac.id** [1].",
+        "answer_end": " data yang tersedia di PMPSTI, email Juni Paryadi adalah **juni@ugm.ac.id** [1]."
+      },
+      {
+        "id": "Q32",
+        "type": "hitung",
+        "q": "Berapa jumlah tenaga kependidikan (tendik) DTETI?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Saya asisten akademik PMPSTI. Senang sekali bisa membantu Anda. Berdasarkan data yang tersedia, jumlah tenaga kependidikan (tendik) di Departemen Teknik Elektro dan Teknologi Informasi (DTETI) adalah **40 orang** [1]. Berikut adalah daftar lengkap tenaga kependidikan tersebut: | No | Nama | NIP | Email | | :--- | :--- | :--- | :--- | | 1 | Juni Paryadi | 196710301987031001 | juni@ugm.ac.id | | 2 | Murtija | 196711161989031003 | murtija@ugm.ac.id | | 3 | Suyanto | 196707141999031002 | suyan",
+        "answer_end": "@mail.ugm.ac.id | Jika ada hal lain yang ingin ditanyakan, silakan sampaikan ya!"
+      },
+      {
+        "id": "Q33",
+        "type": "fakta",
+        "q": "Berapa rata-rata EWMP Bapak Rudy Hartanto?",
+        "ok": true,
+        "error": false,
+        "cut_off": false,
+        "answer": "Halo! Berdasarkan data Ekuivalen Waktu Mengajar Penuh (EWMP) DTPS, rata-rata EWMP untuk Dr. Ir. Rudy Hartanto, M.T., IPM. adalah **6,17** [1].",
+        "answer_end": "TPS, rata-rata EWMP untuk Dr. Ir. Rudy Hartanto, M.T., IPM. adalah **6,17** [1]."
+      }
+    ]
+  },
+  "backend": "http://127.0.0.1:8093",
+  "typo_summary": null
+}

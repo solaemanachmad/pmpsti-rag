@@ -178,8 +178,11 @@ def m_rrf(cur, text, vec, limit, k=60):  # search_rrf — only when requested ex
                     ORDER BY ts_rank(to_tsvector('indonesian', content),
                                      plainto_tsquery('indonesian', %s), 1) DESC
                     LIMIT %s""", (text, cand))
+    # Read the keyword rows before m_semantic runs its own query on the same cursor
+    # (until 2026-11-06 they were read after it and came back empty: RRF = semantic only).
+    keyword = cur.fetchall()
     scores, rows = {}, {}
-    for results in (m_semantic(cur, text, vec, cand), cur.fetchall()):
+    for results in (m_semantic(cur, text, vec, cand), keyword):
         for rank, row in enumerate(results, start=1):
             key = (row[0], row[3])  # (document_id, chunk_index)
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
