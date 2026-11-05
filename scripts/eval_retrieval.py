@@ -23,7 +23,8 @@ Metrics:
   e2e (--backend)          : kata_kunci appears in the backend's ANSWER (/api/ask_public),
                              including out-of-scope questions that must be answered "not found".
                              Uses LLM quota (about 3 Gemini calls per question; the free tier
-                             allows 500 per day). Request errors are excluded from the score.
+                             allows 500 per day). Request errors are excluded from the score,
+                             and so are cut-off answers (see looks_cut_off).
 Questions whose source is not ingested yet, or is out of scope, are counted separately.
 
 --typos scores every question three times: as written and in two misspelled versions (lower
@@ -259,6 +260,19 @@ def load_answer_set() -> tuple[list[dict], list[dict]]:
     return scored, [r for r in rows if r not in scored]
 
 
+# Last characters of a finished answer: end of a sentence, a citation "[1]" / "(…)", a table
+# row "|", bold/code "**" "`", or a closing quote. A trailing ":" means a list never came.
+ANSWER_ENDINGS = (".", "!", "?", ")", "]", "|", "*", "`", '"', "'")
+
+
+def looks_cut_off(answer: str) -> bool:
+    """An answer that stops mid-text (e.g. "Halo! Saya As", "**P") — a generation failure,
+    not a wrong answer. Rule: the last character is not one of ANSWER_ENDINGS.
+    Checked on the full answer, before it is shortened for the results file."""
+    text = answer.rstrip()
+    return bool(text) and not text.endswith(ANSWER_ENDINGS)
+
+
 def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
     """Ask the real backend and check kata_kunci in its answers."""
     rows = [r for r in rows if r["jenis"] != "multi_turn" and r["status_sumber"] in ("ada", "-")]
@@ -287,11 +301,15 @@ def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
         flat = " ".join(answer.split())
         # No answer at all (HTTP error, Gemini quota, network): not a wrong answer —
         # reported separately and left out of the score.
+        # A cut-off answer counts as a request error too.
         error = flat.startswith(("[HTTP", "[ERROR]"))
+        cut_off = not error and looks_cut_off(flat)
+        error = error or cut_off
         ok = not error and answer_found([(None, None, flat, None)], r["kata_kunci"])
         results.append({"id": r["id"], "type": r["jenis"], "q": r["pertanyaan"], "ok": ok,
-                        "error": error, "answer": flat[:500]})
-        print(f"  {'!' if error else '✓' if ok else '·'} {r['id']:<4} {r['pertanyaan'][:60]}")
+                        "error": error, "cut_off": cut_off, "answer": flat[:500],
+                        "answer_end": flat[-80:]})
+        print(f"  {'✂' if cut_off else '!' if error else '✓' if ok else '·'} {r['id']:<4} {r['pertanyaan'][:60]}")
         if verbose and not ok:
             print(f"        → {flat[:220]}")
         if error and "PerDay" in flat:
@@ -300,10 +318,12 @@ def run_e2e(backend: str, rows: list[dict], verbose: bool) -> dict:
     answered = [p for p in results if not p["error"]]
     score = sum(p["ok"] for p in answered) / (len(answered) or 1)
     errors = len(results) - len(answered)
+    cut_off = sum(p["cut_off"] for p in results)
     skipped = len(rows) - len(results)
     print(f"End-to-end correct: {sum(p['ok'] for p in answered)}/{len(answered)} answered ({score:.0%})"
-          + (f" — {errors} request errors, {skipped} not run (excluded)" if errors or skipped else ""))
-    return {"score": score, "answered": len(answered), "errors": errors, "not_run": skipped, "questions": results}
+          + (f" — {errors} request errors ({cut_off} cut off), {skipped} not run (excluded)" if errors or skipped else ""))
+    return {"score": score, "answered": len(answered), "errors": errors, "cut_off": cut_off,
+            "not_run": skipped, "questions": results}
 
 
 def main() -> None:
