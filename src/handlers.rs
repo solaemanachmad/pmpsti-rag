@@ -920,6 +920,12 @@ pub async fn update_password(
         Err(r) => return r,
     };
     let uid: i64 = claims.sub.parse().unwrap_or(0);
+    // Limits guessing the current password with a stolen session.
+    if let Err(wait) = state.limits.hit(&format!("pw-change:{uid}"), PASSWORD_CHANGES_PER_15_MIN,
+                                        std::time::Duration::from_secs(15 * 60)) {
+        return too_many(format!(
+            "Terlalu banyak percobaan ganti password. Coba lagi dalam {}.", crate::limits::wait_text(wait)));
+    }
 
     // Ambil user untuk verifikasi password lama
     let user = match state.db.get_user_by_id(uid).await {
@@ -1641,55 +1647,94 @@ pub async fn admin_create_user(
 }
 
 // ── Forgot Password ──
+
+/// Reset-link requests per hour: per visitor IP, and per e-mail address (stops someone from
+/// flooding one inbox).
+const RESET_REQUESTS_PER_IP_PER_HOUR:    u32 = 10;
+const RESET_REQUESTS_PER_EMAIL_PER_HOUR: u32 = 3;
+/// Attempts to use a reset token per IP per hour (tokens are random UUIDs; this only stops floods).
+const RESET_ATTEMPTS_PER_IP_PER_HOUR:    u32 = 20;
+/// Change-password attempts per account per 15 minutes (each one checks the current password).
+const PASSWORD_CHANGES_PER_15_MIN:       u32 = 5;
+
+const RESET_SENT_MESSAGE: &str = "Jika email terdaftar, link reset akan dikirim.";
+
 pub async fn forgot_password(
+    req:   HttpRequest,
     state: web::Data<AppState>,
     body:  web::Json<serde_json::Value>,
 ) -> HttpResponse {
-    let email = match body.get("email").and_then(|v| v.as_str()) {
+    let email = match body.get("email").and_then(|v| v.as_str()).map(str::trim) {
         Some(e) if !e.is_empty() => e.to_string(),
         _ => return HttpResponse::BadRequest().json(ApiError::new(400, "Email wajib diisi")),
     };
 
-    // Selalu return OK agar tidak bocorkan apakah email terdaftar
-    let user = match state.db.get_user_by_email(&email).await {
-        Ok(Some(u)) => u,
-        _ => return HttpResponse::Ok().json(ApiSuccess::new(
-            serde_json::json!({"message": "Jika email terdaftar, link reset akan dikirim."})
-        )),
-    };
+    let ip = crate::limits::client_ip(&req);
+    for (key, max) in [
+        (format!("reset-ip:{ip}"), RESET_REQUESTS_PER_IP_PER_HOUR),
+        (format!("reset-email:{}", email.to_lowercase()), RESET_REQUESTS_PER_EMAIL_PER_HOUR),
+    ] {
+        if let Err(wait) = state.limits.hit(&key, max, HOUR) {
+            return too_many(format!(
+                "Terlalu banyak permintaan reset password. Coba lagi dalam {}.",
+                crate::limits::wait_text(wait)));
+        }
+    }
 
-    if !user.is_active {
-        return HttpResponse::Ok().json(ApiSuccess::new(
-            serde_json::json!({"message": "Jika email terdaftar, link reset akan dikirim."})
+    // Without an e-mail service the link can never arrive, so say so instead of pretending it
+    // was sent. Checked the same way for every address, so it reveals nothing about accounts.
+    let email_ready = crate::email::is_configured(&state.resend_key);
+
+    // The same answer whether or not the address is registered.
+    let user = match state.db.get_user_by_email(&email).await {
+        Ok(Some(u)) => Some(u),
+        Ok(None) => None,
+        Err(e) => {
+            log::error!("forgot_password: user lookup failed: {e}");
+            None
+        }
+    };
+    // Accounts that never confirmed their e-mail may reset too (opening the link proves they own
+    // the address); accounts an admin deactivated may not.
+    let user = user.filter(|u| u.is_active || !u.email_verified);
+
+    if let Some(user) = user {
+        let token = Uuid::new_v4().to_string();
+        if let Err(e) = state.db.create_password_reset_token(user.id, &token).await {
+            return crate::models::internal_error(format!("create_password_reset_token: {e}"));
+        }
+        let reset_url = format!("{}/reset-password?token={}", state.app_base_url, token);
+        if !email_ready {
+            // Local development: no RESEND_API_KEY, so the link is only in the server log.
+            log::warn!("[email] RESEND_API_KEY is not set; password reset link for user {}: {reset_url}", user.id);
+        } else if let Err(e) = send_password_reset_email(
+            &state.resend_key, &user.email, &reset_url, &state.app_base_url
+        ).await {
+            // Logged, not shown: an error only for registered addresses would reveal which exist.
+            log::error!("[email] password reset e-mail for user {} not sent: {e}", user.id);
+        }
+    }
+
+    if !email_ready {
+        return HttpResponse::ServiceUnavailable().json(ApiError::new(
+            503,
+            "Pengiriman email belum diaktifkan di server, jadi link reset tidak bisa dikirim. Hubungi admin PMPSTI.",
         ));
     }
-
-    let token = Uuid::new_v4().to_string();
-    if let Err(e) = state.db.create_password_reset_token(user.id, &token).await {
-        log::error!("Gagal buat reset token: {e}");
-        return HttpResponse::InternalServerError()
-            .json(ApiError::new(500, "Gagal membuat token reset"));
-    }
-
-    let reset_url = format!("{}/reset-password?token={}", state.app_base_url, token);
-    if let Err(e) = send_password_reset_email(
-        &state.resend_key, &email, &reset_url, &state.app_base_url
-    ).await {
-        log::error!("Gagal kirim reset email: {e}");
-        return HttpResponse::InternalServerError()
-            .json(ApiError::new(500, "Gagal mengirim email reset"));
-    }
-
-    HttpResponse::Ok().json(ApiSuccess::new(
-        serde_json::json!({"message": "Jika email terdaftar, link reset akan dikirim."})
-    ))
+    HttpResponse::Ok().json(ApiSuccess::new(serde_json::json!({ "message": RESET_SENT_MESSAGE })))
 }
 
 // ── Reset Password ──
 pub async fn reset_password(
+    req:   HttpRequest,
     state: web::Data<AppState>,
     body:  web::Json<serde_json::Value>,
 ) -> HttpResponse {
+    let ip = crate::limits::client_ip(&req);
+    if let Err(wait) = state.limits.hit(&format!("reset-use-ip:{ip}"), RESET_ATTEMPTS_PER_IP_PER_HOUR, HOUR) {
+        return too_many(format!(
+            "Terlalu banyak percobaan. Coba lagi dalam {}.", crate::limits::wait_text(wait)));
+    }
     let token = match body.get("token").and_then(|v| v.as_str()) {
         Some(t) if !t.is_empty() => t.to_string(),
         _ => return HttpResponse::BadRequest().json(ApiError::new(400, "Token wajib diisi")),
@@ -1726,9 +1771,11 @@ pub async fn reset_password(
             .json(ApiError::new(500, "Gagal update password"));
     }
 
-    // Aktifkan + verifikasi email jika belum (user baru dari admin)
+    // The link proved the user owns the address: mark it verified, and activate accounts that
+    // were only waiting for that. An account an admin deactivated (already verified) stays off.
     let _ = sqlx::query(
-        "UPDATE users SET email_verified = true, is_active = true WHERE id = $1"
+        "UPDATE users SET is_active = (is_active OR NOT email_verified), email_verified = true
+         WHERE id = $1"
     )
     .bind(user_id)
     .execute(&state.db.pool)

@@ -29,7 +29,8 @@
 <AuthShell title="Forgot your password?" description="Enter your email and we’ll send you a reset link.">
   {#if success}
     <Alert variant="success">
-      Email sent. Check your inbox and open the reset link — it expires in 1 hour.
+      If an account exists for <strong>{email.trim()}</strong>, a reset link is on its way.
+      Check your inbox (and the spam folder) — the link expires in 1 hour.
     </Alert>
     <a href="/login" class="btn-outline w-full mt-4">Back to sign in</a>
   {:else}
