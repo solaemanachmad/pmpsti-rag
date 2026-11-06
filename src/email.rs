@@ -17,6 +17,11 @@ fn from_address() -> String {
         .unwrap_or_else(|_| "PMPSTI <onboarding@resend.dev>".to_string())
 }
 
+/// True when an e-mail API key is set. Without it no e-mail can be sent (local development).
+pub fn is_configured(api_key: &str) -> bool {
+    !api_key.trim().is_empty()
+}
+
 pub async fn send_verification_email(
     api_key:    &str,
     to_email:   &str,
